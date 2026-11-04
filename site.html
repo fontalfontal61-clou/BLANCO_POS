@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="ht">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#14305c">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Mini POS — Sit pwopriyetè a</title>
+<!--
+=== ENSTALASYON (yon sèl fichye) ===
+1. Firebase Console › kreye yon pwojè › Authentication › Email/Password aktive.
+2. Firestore Database › kreye baz la › Rules › kole règ ki anba a, epi Publish.
+(San etap 3 la, paj la mache an mòd DEMO: done yo sove sèlman nan navigatè a, pou w ka verifye tout bagay.)
+3. Project settings › Your apps › Web › kopye konfigirasyon an nan FB anba a.
+4. Authentication › Settings › Authorized domains: ajoute domèn sit ou a. Mete fichye a sou yon hosting.
+
+rules_version = '2';
+service cloud.firestore { match /databases/{d}/documents {
+  match /staffIdx/{id} {
+    allow read: if true;
+    allow create, update: if request.auth != null && get(/databases/$(d)/documents/shops/$(request.resource.data.sid)).data.owner == request.auth.uid;
+  }
+  match /admins/{uid} { allow read: if request.auth != null && request.auth.uid == uid; }
+  match /users/{uid} {
+    allow read: if request.auth != null && request.auth.uid == uid;
+    allow create: if request.auth != null && (request.auth.uid == uid
+      || get(/databases/$(d)/documents/shops/$(request.resource.data.sid)).data.owner == request.auth.uid);
+    allow delete: if request.auth != null
+      && get(/databases/$(d)/documents/shops/$(resource.data.sid)).data.owner == request.auth.uid;
+  }
+  match /shops/{sid} {
+    function owner() { return request.auth != null && get(/databases/$(d)/documents/shops/$(sid)).data.owner == request.auth.uid; }
+    function member() { return request.auth != null && exists(/databases/$(d)/documents/shops/$(sid)/members/$(request.auth.uid)); }
+    function admin() { return request.auth != null && exists(/databases/$(d)/documents/admins/$(request.auth.uid)); }
+    function active() { let s = get(/databases/$(d)/documents/shops/$(sid)).data;
+      return s.get('paidUntil', 0) > request.time.toMillis() || s.get('trialEnd', 0) > request.time.toMillis(); }
+    allow read: if member() || admin();
+    allow create: if request.auth != null && request.resource.data.owner == request.auth.uid
+      && request.resource.data.trialEnd <= request.time.toMillis() + 1382400000
+      && !('paidUntil' in request.resource.data);
+    allow update: if admin() || (owner() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['trialEnd','paidUntil','owner']));
+    allow delete: if admin();
+    match /members/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || owner());
+      allow create: if request.auth != null && (owner()
+        || (request.auth.uid == uid && getAfter(/databases/$(d)/documents/shops/$(sid)).data.owner == uid));
+      allow update, delete: if owner();
+    }
+    match /products/{id} {
+      allow read: if member();
+      allow create, delete: if owner() && active();
+      allow update: if active() && (owner() || (member() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['qty'])));
+    }
+    match /sales/{id} {
+      allow read: if owner() || (member() && resource.data.seller == request.auth.uid);
+      allow create: if member() && active() && request.resource.data.seller == request.auth.uid;
+      allow update: if active() && (owner() || (member() && resource.data.seller == request.auth.uid && request.resource.data.seller == request.auth.uid));
+      allow delete: if active() && (owner() || (member() && resource.data.seller == request.auth.uid));
+    }
+    match /moves/{id} { allow read: if owner(); allow create: if owner() && active(); }
+    match /daily/{id} { allow read: if owner(); allow create, update: if owner() && active(); }
+    match /logs/{id} { allow create: if member() && active(); allow read: if owner(); }
+  } } }
+-->
+<style>
+*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+body{background:#f1f4f8;color:#1a2332;padding-bottom:30px}
+header{background:#14305c;color:#fff;padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+header b{font-size:1.1rem}.hr{display:flex;gap:8px;align-items:center}
+.lang{display:inline-flex;border:1px solid #6ea8fe;border-radius:4px;overflow:hidden}
+.lang button{background:none;border:0;color:#fff;padding:3px 9px;font-size:.75rem;font-weight:700;cursor:pointer}
+.lang button+button{border-left:1px solid #6ea8fe}.lang .on{background:#2f6fd6}
+.out{background:none;border:1px solid #6ea8fe;color:#fff;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:.8rem}
+.tabs{display:flex;overflow-x:auto;background:#fff;border-bottom:1px solid #dbe2ec;position:sticky;top:0;z-index:5}
+.tabs button{flex:1;min-width:90px;padding:12px 8px;border:0;background:none;font-weight:700;color:#556;cursor:pointer;border-bottom:3px solid transparent}
+.tabs .on{color:#14305c;border-color:#27ae60}
+main{max-width:980px;margin:12px auto;padding:0 10px}
+.card{background:#fff;border-radius:10px;padding:14px;margin-bottom:12px;box-shadow:0 1px 4px #0001}
+h2,h3{margin-bottom:8px}label{display:block;font-size:.82rem;color:#556;margin:9px 0 3px}
+input,select{width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:1rem}
+.btn{background:#27ae60;color:#fff;border:0;border-radius:8px;padding:11px 14px;font-weight:700;cursor:pointer;width:100%;margin-top:10px;font-size:1rem}
+.btn.s{background:#2f6fd6}.btn.d{background:#c0392b}.btn.g{background:#718096}
+.sm{width:auto;padding:5px 10px;font-size:.82rem;margin:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}
+.pt{background:#fff;border:1px solid #dbe2ec;border-radius:10px;padding:10px;text-align:left;cursor:pointer}
+.pt:active{background:#eaf6ee}.pt.z{opacity:.45}.pt b{display:block;font-size:.92rem}.pt i{font-style:normal;color:#27ae60;font-weight:700}.pt small{color:#718096;display:block}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #edf0f4;flex-wrap:wrap}
+.mut{color:#718096;font-size:.88rem}.err{color:#c0392b;font-weight:700;margin-top:8px}.ok{color:#27ae60;font-weight:700;margin-top:8px}
+.low{color:#c0392b;font-weight:700}.tot{font-size:1.3rem;font-weight:800}
+.kp{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px}.kp div{background:#fff;border-radius:10px;padding:12px;text-align:center}.kp b{display:block;font-size:1.15rem;color:#14305c}
+.q{display:inline-flex;align-items:center;gap:6px}.q button{width:28px;height:28px;border-radius:6px;border:1px solid #cbd5e0;background:#fff;font-size:1rem;cursor:pointer}
+#rc{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:14px;z-index:20}
+#rc .p{background:#fff;border-radius:10px;padding:16px;max-width:340px;width:100%;max-height:92vh;overflow:auto;font:14px/1.4 "Courier New",monospace}
+#rc .c{text-align:center}#rc hr{border:0;border-top:1px dashed #000;margin:8px 0}#rc .l{display:flex;justify-content:space-between;gap:8px}
+#rc .no{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}#rc .no .btn{margin-top:0;padding:10px 6px;font-size:.9rem}
+@media print{#rc img{display:inline-block!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;max-width:100%}body>*:not(#rc){display:none!important}#rc{position:static;background:none;display:block!important}#rc .no{display:none}}
+</style>
+</head>
+<body>
+<header><b id="bn">Mini POS</b>
+  <div class="hr"><div class="lang"><button id="lf" onclick="setLang('fr')">FR</button><button id="lh" onclick="setLang('ht')">HT</button></div><span id="ho"></span></div></header>
+<div id="tabs"></div>
+<main id="app"></main>
+<div id="rc"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+// >>> Kole konfigirasyon Firebase ou isit la <<<
+const FB={apiKey:"AIzaSyAJsXEXqL_aS5G79wTKyS30NCe0KAjeoQc",authDomain:"blanco-point-de-vente.firebaseapp.com",projectId:"blanco-point-de-vente",storageBucket:"blanco-point-de-vente.firebasestorage.app",messagingSenderId:"946666877414",appId:"1:946666877414:web:51c28bfbf2d3d80f67a627"};
+
+const D={
+tag:['Sistèm vant pou biznis ou','Caisse pour votre commerce'],login:['Konekte','Se connecter'],signup:['Kreye yon kont','Créer un compte'],
+haveAcc:['Ou gen kont deja? Konekte','Déjà un compte ? Se connecter'],noAcc:['Poko gen kont? Kreye youn','Pas de compte ? En créer un'],
+email:['Imèl','E-mail'],pass:['Modpas (6 karaktè minimòm)','Mot de passe (6 caractères min.)'],bad:['Imèl oswa modpas pa bon (oswa kont lan egziste deja).','E-mail ou mot de passe incorrect (ou compte déjà existant).'],
+logout:['Soti','Quitter'],newbiz:['Kreye biznis ou','Créez votre commerce'],bname:['Non biznis la','Nom du commerce'],create:['Kreye','Créer'],
+vant:['Vant','Vente'],inv:['Pwodwi','Produits'],rap:['Rapò','Rapports'],staff:['Anplwaye','Employés'],search:['Chèche pwodwi...','Rechercher...'],
+stock:['Stòk','Stock'],cartT:['Panye','Panier'],empty:['Panye a vid.','Panier vide.'],total:['Total','Total'],pay:['Peman','Paiement'],cash:['Kach','Espèces'],
+client:['Kliyan (si w vle)','Client (facultatif)'],sell:['Konfime vant','Valider la vente'],noStock:['Pa gen ase stòk pou','Stock insuffisant pour'],
+receipt:['Resi','Reçu'],print:['Enprime','Imprimer'],share:['📷 WhatsApp','📷 WhatsApp'],close:['Fèmen','Fermer'],thx:['Mèsi, tounen vin wè nou!','Merci, à bientôt !'],
+pname:['Non pwodwi','Nom du produit'],pprice:['Pri (HTG)','Prix (HTG)'],pqty:['Kantite an stòk','Quantité en stock'],save:['Anrejistre','Enregistrer'],
+edit:['Modifye','Modifier'],del:['Efase','Supprimer'],sure:['Efase sa a?','Supprimer ?'],low:['Stòk ba','Stock bas'],cancel:['Anile','Annuler'],
+today:['Jodi a','Aujourd’hui'],d7:['7 jou','7 jours'],d30:['30 jou','30 jours'],sales:['Vant','Ventes'],rev:['Rekòt','Chiffre d’affaires'],
+bySeller:['Pa vandè','Par vendeur'],top:['Pwodwi ki vann plis','Meilleurs produits'],recent:['Dènye vant yo','Dernières ventes'],
+sname:['Non','Nom'],addStaff:['Ajoute yon anplwaye','Ajouter un employé'],rmS:['Retire aksè','Retirer l’accès'],
+sNote:['Anplwaye a konekte ak imèl ak modpas sa a. Li ka sèlman fè vant.','L’employé se connecte avec cet e-mail et ce mot de passe. Il peut seulement vendre.'],
+nocfg:['Kole konfigirasyon Firebase ou nan fichye a (gade tèt fichye a).','Collez votre configuration Firebase dans le fichier (voir le haut du fichier).'],
+err:['Erè: ','Erreur : '],req:['Ranpli tout chan yo.','Remplissez tous les champs.'],none:['Anyen pou kounye a.','Rien pour le moment.'],
+dash:['Tablo de bò','Tableau de bord'],set:['Paramèt','Paramètres'],last7:['7 dènye jou yo','7 derniers jours'],phone:['Telefòn','Téléphone'],addr:['Adrès','Adresse'],
+foot:['Mesaj anba resi a','Message en bas du reçu'],lowTh:['Alèt stòk ba (kantite)','Alerte stock bas (quantité)'],cur:['Lajan','Devise'],
+reset:['Voye imèl pou chanje modpas','Envoyer un e-mail pour changer le mot de passe'],sent:['Imèl voye.','E-mail envoyé.'],saved:['Anrejistre ✔','Enregistré ✔'],
+week:['Semèn sa a','Cette semaine'],month:['Mwa sa a','Ce mois'],stockVal:['Valè stòk (pri vant)','Valeur du stock (prix de vente)'],avg:['Vant mwayèn','Panier moyen'],
+info:['Enfòmasyon biznis la','Informations du commerce'],okAll:['Tout stòk la bon.','Tout le stock est correct.'],acct:['Kont ou','Votre compte'],lowL:['Pwodwi ki prèske fini','Produits bientôt épuisés'],
+logo:['Logo','Logo'],addLogo:['Chwazi yon logo','Choisir un logo'],rmLogo:['Retire logo a','Retirer le logo'],wa:['WhatsApp biznis la','WhatsApp du commerce'],
+tid:['NIF / nimewo biznis (si w genyen)','NIF / n° d’identification (facultatif)'],logoHint:['Imaj la ap redui otomatikman. Klike Anrejistre pou konfime.','L’image est réduite automatiquement. Cliquez sur Enregistrer pour confirmer.'],
+demo:['🧪 Mòd demo: done yo sove sèlman nan navigatè sa a. Lè tout bagay bon, kole konfigirasyon Firebase la pou mete l an liy.','🧪 Mode démo : les données sont enregistrées uniquement dans ce navigateur. Quand tout est bon, collez la configuration Firebase pour la mise en ligne.'],
+demoReset:['Efase done demo yo','Effacer les données de démo'],
+invT:['Inventè','Inventaire'],invIn:['Antre','Entrée'],invOut:['Soti','Sortie'],invAdj:['Ajiste','Ajuster'],all:['Tout','Tous'],lowF:['Stòk ba','Stock bas'],outF:['Fini','Épuisé'],
+units:['Total inite','Total unités'],outN:['Pwodwi fini','Produits épuisés'],hist:['Istorik mouvman yo','Historique des mouvements'],reason:['Rezon (si w vle)','Motif (facultatif)'],
+tIn:['Antre','Entrée'],tOut:['Soti','Sortie'],tAdj:['Ajisteman','Ajustement'],badQty:['Mete yon kantite valid.','Indiquez une quantité valide.'],noGo:['Ou pa ka retire plis pase sa ki an stòk.','Impossible de retirer plus que le stock.'],
+invHelp:['Antre = ajoute stòk · Soti = retire (pèt, domaj) · Ajiste = mete kantite egzat apre w konte.','Entrée = ajouter du stock · Sortie = retirer (perte, casse) · Ajuster = fixer la quantité exacte après comptage.'],
+openPos:['🧾 Louvri POS la','🧾 Ouvrir la caisse'],openSite:['⚙️ Jere sou sit la','⚙️ Gérer sur le site'],
+onlyOwner:['Paj sa a se pou pwopriyetè a. Itilize POS la pou fè vant.','Cette page est réservée au propriétaire. Utilisez la caisse pour vendre.'],
+posNew:['Kont sa a poko gen biznis. Kreye biznis ou sou sit la anvan.','Ce compte n’a pas encore de commerce. Créez-le d’abord sur le site.'],goSite:['Ale sou sit la','Aller sur le site'],
+land1:['Kreye biznis ou an liy','Créez votre commerce en ligne'],land2:['Jere pwodwi, inventè, anplwaye ak rapò sou sit la. Fè vant ak POS la sou telefòn ou.','Gérez produits, inventaire, employés et rapports sur le site. Vendez avec la caisse sur votre téléphone.'],
+lf1t:['🧾 POS pou vann','🧾 Caisse pour vendre'],lf1d:['Vant rapid, resi, WhatsApp.','Ventes rapides, reçus, WhatsApp.'],
+lf2t:['📦 Pwodwi ak inventè','📦 Produits et stock'],lf2d:['Antre, soti, ajisteman, alèt stòk ba.','Entrées, sorties, ajustements, alertes de stock bas.'],
+lf3t:['⚙️ Tout kontwòl sou sit la','⚙️ Tout le contrôle sur le site'],lf3d:['Logo, enfòmasyon biznis, anplwaye, rapò.','Logo, infos du commerce, employés, rapports.'],
+logs:['Istorik modifikasyon ak resi anile','Historique des modifications et annulations'],lEdit:['Modifye','Modifié'],lDel:['Anile','Annulé'],
+sureDel:['Anile resi sa a? Stòk la ap tounen.','Annuler ce reçu ? Le stock sera rétabli.'],cancelRc:['Anile resi a','Annuler le reçu'],hintRc:['Peze sou yon resi pou wè l, oswa sou Modifye / Anile resi a.','Touchez un reçu pour le voir, ou utilisez Modifier / Annuler le reçu.'],
+resi:['Istorik','Historique'],rcT:['Resi yo','Reçus'],searchRc:['Chèche pa nimewo, kliyan oswa vandè...','Chercher par numéro, client ou vendeur...'],noRc:['Poko gen resi. Fè yon vant nan POS la.','Aucun reçu. Faites une vente dans la caisse.'],
+prn:['Imprimant','Imprimante'],prnStatus:['Eta','État'],prnSys:['Enprime ak navigatè a (PDF / imprimant sistèm)','Impression du navigateur (PDF / imprimante système)'],
+prnConn:['konekte','connectée'],prnDisc:['pa konekte','non connectée'],prnType:['Kalite imprimant','Type d’imprimante'],prnWidth:['Lajè papye','Largeur du papier'],
+prnAuto:['Enprime otomatikman apre chak vant','Imprimer automatiquement après chaque vente'],prnAdd:['Ajoute yon imprimant','Ajouter une imprimante'],prnTest:['Teste imprimant lan','Tester l’imprimante'],prnRm:['Retire imprimant lan','Retirer l’imprimante'],
+prnNo:['Navigatè sa a pa sipòte sa. Itilize Chrome sou Android oswa òdinatè.','Ce navigateur ne le supporte pas. Utilisez Chrome sur Android ou ordinateur.'],
+prnNoChar:['Mwen pa jwenn kanal enprime a nan aparèy sa a.','Impossible de trouver le canal d’impression de cet appareil.'],prnOk:['Imprimant lan ajoute ✔','Imprimante ajoutée ✔'],
+prnRe:['Konekte imprimant lan ankò nan Paramèt.','Reconnectez l’imprimante dans Paramètres.'],
+prnNote:['Bluetooth ak USB mache sèlman nan Chrome/Edge (Android oswa òdinatè) ak imprimant tèmik ESC/POS. Ou dwe konekte imprimant lan ankò chak fwa w louvri paj la. Sou iPhone, itilize enprime navigatè a.','Bluetooth et USB fonctionnent uniquement dans Chrome/Edge (Android ou ordinateur) avec une imprimante thermique ESC/POS. Il faut reconnecter l’imprimante à chaque ouverture de la page. Sur iPhone, utilisez l’impression du navigateur.'],
+sub:['Abònman','Abonnement'],subTrial:['Esè gratis','Essai gratuit'],subPaid:['Abònman aktif jiska','Abonnement actif jusqu’au'],days:['jou','jours'],
+expired:['Esè gratis ou a fini. Abòne pou kontinye itilize sistèm nan.','Votre essai gratuit est terminé. Abonnez-vous pour continuer.'],plans:['Chwazi yon plan','Choisissez un plan'],subPay:['Peye','Payer'],
+subHow:['Voye lajan an sou Natcash la a, epi voye prèv la sou WhatsApp. Abònman an aktive apre nou verifye l.','Envoyez le paiement sur le Natcash ci-dessous puis la preuve sur WhatsApp. L’abonnement est activé après vérification.'],
+subCode:['Kòd biznis ou','Votre code commerce'],trialBar:['🎁 Esè gratis: ','🎁 Essai gratuit : '],leftBar:[' jou ki rete',' jours restants'],renewBar:['⏳ Abònman an fini nan ','⏳ Votre abonnement se termine dans '],
+msgPay:['Bonjou, mwen vle abòne.','Bonjour, je veux m’abonner.'],noWa:['Nimewo WhatsApp sipò a poko konfigire.','Le numéro WhatsApp du support n’est pas encore configuré.'],
+blockedStaff:['Abònman biznis la fini. Mande pwopriyetè a pou renouvle l.','L’abonnement du commerce est terminé. Demandez au propriétaire de le renouveler.'],
+nofb:['Firebase pa ka chaje. Sa rive lè w louvri paj la nan yon previzyalizasyon (tankou andedan aplikasyon Claude) oswa san entènèt. Depoze l sou Netlify epi louvri l nan Chrome.','Firebase ne se charge pas. Cela arrive dans un aperçu (comme dans l’application Claude) ou sans internet. Déployez sur Netlify puis ouvrez la page dans Chrome.'],
+fsDown:['Pa ka rive nan Firestore. Verifye ke baz la kreye (Firestore Database › Create database) epi ke entènèt la bon.','Impossible de joindre Firestore. Vérifiez que la base est créée (Firestore Database › Create database) et que la connexion est bonne.'],
+rulesMsg:['Firestore refize aksè. Piblye règ yo (Firestore › Rules › Publish).','Firestore refuse l’accès. Publiez les règles (Firestore › Rules › Publish).'],
+noDb:['Baz Firestore a poko kreye (Firestore Database › Create database).','La base Firestore n’est pas créée (Firestore Database › Create database).'],
+offT:['📴 Ou offline. Ou ka kontinye vann: vant yo ap sove epi voye otomatikman lè entènèt la tounen.','📴 Vous êtes hors ligne. Vous pouvez continuer à vendre : les ventes sont enregistrées et envoyées automatiquement au retour d’internet.'],
+pendT:['vant ap tann senkronizasyon','vente(s) en attente de synchronisation'],
+logoSize:['Gwosè logo a','Taille du logo'],emailOrName:['Imèl oswa non anplwaye','E-mail ou nom d’employé'],
+bizCode:['Kòd biznis (sèlman pou anplwaye)','Code du commerce (employés seulement)'],needCode:['Mete kòd biznis la (pwopriyetè a ba w li).','Indiquez le code du commerce (donné par le propriétaire).'],
+dupStaff:['Non sa a deja itilize pou yon lòt anplwaye. Chanje l.','Ce nom est déjà utilisé par un autre employé. Changez-le.'],
+staffInfo:['Anplwaye a konekte ak non li, modpas la, ak kòd biznis la (yon sèl fwa sou chak telefòn). Li ka sèlman fè vant.','L’employé se connecte avec son nom, le mot de passe et le code du commerce (une seule fois par téléphone). Il peut seulement vendre.'],
+prnRawName:['RawBT (Android — imprimant pè nan Bluetooth telefòn nan)','RawBT (Android — imprimante associée dans le Bluetooth du téléphone)'],
+prnRawOk:['RawBT pare','RawBT prêt'],
+prnRaw:['Pou konekte imprimant lan tankou yon ekoutè Bluetooth: 1) Pè imprimant lan nan Paramèt Bluetooth Android la. 2) Enstale aplikasyon gratis RawBT nan Play Store, epi chwazi imprimant lan ladan l (yon sèl fwa). 3) Isit la chwazi RawBT, peze Ajoute, epi Teste. Apre sa imprimant lan rete konekte pou tout vant yo.','Pour connecter l’imprimante comme un casque Bluetooth : 1) Associez l’imprimante dans les paramètres Bluetooth d’Android. 2) Installez l’application gratuite RawBT (Play Store) et choisissez l’imprimante dedans (une seule fois). 3) Ici, choisissez RawBT, appuyez sur Ajouter puis Tester. L’imprimante reste ensuite connectée pour toutes les ventes.'],
+seller:['Vandè','Vendeur'],
+imgSaved:['Imaj resi a telechaje. Louvri WhatsApp epi voye l kòm foto.','Image du reçu téléchargée. Ouvrez WhatsApp et envoyez-la comme photo.'],
+dl:['Telechaje','Télécharger'],
+prnPick:['Chwazi yon lòt imprimant','Choisir une autre imprimante'],
+prnNoShow:['Si imprimant lan pa parèt nan lis Bluetooth la, li pa sipòte Bluetooth BLE. Chwazi RawBT pi wo a.','Si l’imprimante n’apparaît pas dans la liste Bluetooth, elle ne supporte pas le BLE. Choisissez RawBT ci-dessus.'],
+printRap:['Enprime rapò a','Imprimer le rapport'],rapT:['RAPÒ','RAPPORT'],byPay:['Pa metòd peman','Par mode de paiement'],
+disc:['Rabè','Rabais'],tax:['Taks','Taxe'],taxRate:['Pousantaj taks (%) — 0 si pa gen','Taux de taxe (%) — 0 si aucune'],taxName:['Non taks la (egzanp TCA)','Nom de la taxe (ex. TCA)'],
+discMax:['Rabè maksimòm pou anplwaye (%)','Remise maximale pour les employés (%)'],subT:['Sou-total','Sous-total'],discMaxMsg:['Rabè a twò gwo pou ou. Maksimòm:','Remise trop élevée pour vous. Maximum :'],
+recv:['Kob kliyan bay la','Montant reçu'],change:['Monnaie pou remèt','Monnaie à rendre'],short:['Manke','Il manque'],exact:['Egzak','Exact'],
+nameStyle:['Gwosè ak stil non biznis la','Taille et style du nom du commerce'],nameSize:['Gwosè non an','Taille du nom'],fDef:['Nòmal','Défaut'],fSans:['Sans serif','Sans serif'],fSerif:['Serif','Serif'],fMono:['Monospace','Monospace'],
+nameHintTh:['Sou imprimant tèmik la, gwosè a limite a 1× oswa 2× epi lèt la pa chanje (sèlman gra a).','Sur l’imprimante thermique, la taille est limitée à 1× ou 2× et la police ne change pas (gras seulement).'],
+forgot:['Bliye modpas?','Mot de passe oublié ?'],fgNeed:['Mete imèl ou anwo a anvan.','Saisissez d’abord votre e-mail ci-dessus.'],
+fgSent:['Imèl voye. Tcheke bwat imèl ou (ak spam) pou chanje modpas la.','E-mail envoyé. Vérifiez votre boîte (et les spams) pour changer le mot de passe.'],
+fgStaff:['Anplwaye: mande pwopriyetè a pou reyinisyalize modpas ou (bouton 🔑 nan paj Anplwaye).','Employé : demandez au propriétaire de réinitialiser votre mot de passe (bouton 🔑 dans la page Employés).'],
+chPw:['Chanje modpas mwen','Changer mon mot de passe'],curPw:['Modpas aktyèl la','Mot de passe actuel'],newPw:['Nouvo modpas (6 karaktè minimòm)','Nouveau mot de passe (6 caractères min.)'],
+newPw2:['Repete nouvo modpas la','Répétez le nouveau mot de passe'],pwDone:['Modpas la chanje ✔','Mot de passe modifié ✔'],pwMismatch:['De nouvo modpas yo pa menm.','Les deux mots de passe ne correspondent pas.'],
+curPwBad:['Modpas aktyèl la pa bon.','Le mot de passe actuel est incorrect.'],rsPw:['Nouvo modpas','Nouveau mot de passe'],
+rsOk:['Modpas anplwaye a chanje ✔ Bay li nouvo modpas la.','Mot de passe de l’employé modifié ✔ Donnez-lui le nouveau.'],
+rsSales:['(Kèk ansyen vant pa t ka transfere sou nouvo kont lan. Ou wè yo toujou nan Istorik pwopriyetè a.)','(Certaines anciennes ventes n’ont pas pu être rattachées au nouveau compte. Vous les voyez toujours dans l’historique du propriétaire.)'],
+purgeOn:['Siprime ansyen resi otomatikman','Supprimer automatiquement les anciens reçus'],
+purgeDays:['Konsève resi pandan (jou, minimòm 7)','Conserver les reçus pendant (jours, minimum 7)'],
+purgeNote:['Resi ki pi vye pase kantite jou sa a siprime lè pwopriyetè a louvri sit la. Total chak jou (kantite vant, rekòt, taks, rabè) rete nan Rapò, men detay pa vandè ak pa pwodwi ale ak resi yo. Sa pa ka defèt.','Les reçus plus anciens sont supprimés quand le propriétaire ouvre le site. Les totaux de chaque jour (nombre de ventes, recettes, taxes, remises) restent dans les Rapports, mais le détail par vendeur et par produit disparaît avec les reçus. Irréversible.'],
+purgeNow:['Siprime ansyen resi yo kounye a','Supprimer maintenant les anciens reçus'],purgeSure:['Siprime resi ki pi vye pase kantite jou ou sove a? Sa pa ka defèt.','Supprimer les reçus plus anciens que la durée enregistrée ? Irréversible.'],
+purgedN:['{n} resi siprime.','{n} reçu(s) supprimé(s).'],archNote:['Total yo gen ladan yo rezime jou ki te deja siprime yo.','Les totaux incluent les résumés des jours déjà supprimés.'],
+nobiz:['Kont sa a pa rete nan okenn biznis.','Ce compte n’appartient à aucun commerce.'],unit:['atik','article(s)'],owner:['Pwopriyetè','Propriétaire'],hi:['Resi','Reçu']};
+const FR=()=>lang==='fr'?1:0,t=k=>(D[k]||[k,k])[FR()];
+const ls=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}};
+let lang=ls('mp_lang')==='fr'?'fr':'ht';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const money=n=>(+n||0).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' '+((typeof shop!=='undefined'&&shop&&shop.cur)||'HTG');
+const low=()=>(shop&&shop.low!=null&&shop.low!=='')?+shop.low:3;
+const dt=x=>new Date(x).toLocaleString(lang==='fr'?'fr-FR':'fr-HT',{dateStyle:'short',timeStyle:'short'});
+const APP='site';
+const BILLING={trialDays:15,wa:'50932552205',moncash:'',natcash:'32552205',
+  plans:[{id:'m1',name:'1 mwa',days:30,price:1000},{id:'m3',name:'3 mwa',days:90,price:2700},{id:'y1',name:'1 an',days:365,price:9600}]}; // <<< CHANJE PRI YO, NIMEWO MONCASH/NATCASH, EPI NIMEWO WHATSAPP SIPÒ OU
+const DAY=864e5;
+const demo=String(FB.apiKey).startsWith('COLLE');
+let pend=0,rper='all',rq='',lg=[],invF='all',invQ='',mv=[],sdr=null,logoDraft,db,au,fv,user=null,sid=null,mem=null,shop=null,tab='vant',prods=[],sales=[],team=[],cart={},pay='cash',client='',q='',ed=null,per=7,mode='login',err='',msg='',stage='boot',un=[];
+
+const offBar=()=>{const o=typeof navigator!=='undefined'&&navigator.onLine===false;return(o||pend)?`<div class="card" style="background:#fff3cd;padding:10px;font-size:.9rem">${o?t('offT'):''}${pend?` <b>⏳ ${pend}</b> ${t('pendT')}`:''}</div>`:''};
+function setLang(l){lang=l;ls('mp_lang',l);draw()}
+function say(m,e){err=e?m:'';msg=e?'':m}
+const sc=p=>db.collection('shops/'+sid+'/'+p);
+const isOwner=()=>mem&&mem.role==='owner';
+
+/* ---------- écrans ---------- */
+function draw(){
+  if(window.NOFB){$('app').innerHTML=`<div class="card err">${t('nofb')}</div>`;return}
+  document.documentElement.lang=lang;$('lf').className=lang==='fr'?'on':'';$('lh').className=lang==='ht'?'on':'';
+  $('bn').style.cssText=shop?nameCss(shop,1.1):'';$('bn').innerHTML=(shop&&shop.logo?`<img src="${esc(shop.logo)}" alt="" style="height:${Math.min(60,Math.round(26*(shop.logoSize||100)/100))}px;vertical-align:middle;margin-right:8px;border-radius:4px;background:#fff">`:'')+esc(shop&&shop.name?shop.name:'Mini POS');
+  const other=APP==='site'?`<a class="out" style="text-decoration:none" href="pos.html">${t('openPos')}</a>`:(isOwner()?`<a class="out" style="text-decoration:none" href="site.html">${t('openSite')}</a>`:'');
+  $('ho').innerHTML=user?`${other}<button class="out" onclick="au.signOut()">${t('logout')}</button>`:'';
+  let h='',tb='';
+  if(stage==='boot')h='<div class="card mut">…</div>';
+  else if(!user)h=(APP==='site'?vLand():'')+vAuth();
+  else if(stage==='new')h=APP==='site'?vNew():`<div class="card"><p>${t('posNew')}</p><a class="btn" style="text-decoration:none;display:block;text-align:center" href="site.html">${t('goSite')}</a></div>`;
+  else if(stage==='fail')h=`<div class="card"><p class="err">${esc(err)}</p><button class="btn" onclick="location.reload()">↻</button></div>`;
+  else if(stage==='none')h=`<div class="card err">${t('nobiz')}</div>`;
+  else{
+    const T=APP==='pos'?[['vant',t('vant')],['mine',t('today')]]:(isOwner()?[['dash',t('dash')],['inv',t('inv')],['invT',t('invT')],['rap',t('rap')],['resi',t('resi')],['staff',t('staff')],['set',t('set')],['sub',t('sub')]]:[]);
+    tb=`<div class="tabs">${T.map(x=>`<button class="${tab===x[0]?'on':''}" onclick="tab='${x[0]}';say('');sdr=null;logoDraft=undefined;logoSzDraft=undefined;nmD={};draw()">${x[1]}</button>`).join('')}</div>`;
+    h=APP==='pos'?(tab==='mine'?vMine():vVant()):!isOwner()?`<div class="card"><p>${t('onlyOwner')}</p><a class="btn" style="text-decoration:none;display:block;text-align:center" href="pos.html">${t('openPos')}</a></div>`:tab==='dash'?vDash():tab==='inv'?vInv():tab==='invT'?vInvT():tab==='rap'?vRap():tab==='resi'?vResi():tab==='staff'?vStaff():tab==='set'?vSet():tab==='sub'?vSub():vVant();
+      const bl=bill();
+    if(bl.st==='expired'){
+      const ow=isOwner();
+      tb=ow?`<div class="tabs"><button class="on">${t('sub')}</button></div>`:'';
+      h=ow?`<div class="card err">${t('expired')}</div>`+vSub():`<div class="card err">${t('blockedStaff')}</div>`+(APP==='pos'&&isOwner()?`<a class="btn" style="text-decoration:none;display:block;text-align:center" href="site.html">${t('goSite')}</a>`:'');
+    }else h=billBar(bl)+h;
+  }
+  $('tabs').innerHTML=tb;$('app').innerHTML=(demo?`<div class="card" style="background:#fff8e1;border:1px dashed #f0b429"><p style="font-size:.88rem">${t('demo')}</p><button class="btn g sm" style="margin-top:8px" onclick="demoReset()">${t('demoReset')}</button></div>`:'')+offBar()+h;
+}
+const E=()=>err?`<p class="err">${esc(err)}</p>`:msg?`<p class="ok">${esc(msg)}</p>`:'';
+const I=(id,l,v,ty)=>`<label for="${id}">${l}</label><input id="${id}" type="${ty||'text'}" value="${esc(v)}">`;
+
+const slug=x=>String(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+const staffMail=(n,code,v)=>slug(n)+'.'+code+(v?'.v'+v:'')+'@staff.minipos.app';
+let rsId='',pwMsg='',pwOk=false,lastEm='';
+async function forgotPw(){
+  const e=($('em').value||'').trim();lastEm=e;
+  if(!e){say(t('fgNeed'),1);draw();return}
+  if(e.indexOf('@')<0){say(t('fgStaff'),1);draw();return}
+  try{await au.sendPasswordResetEmail(e);say(t('fgSent'))}catch(x){say(authErr(x),1)}draw()}
+async function changePw(){
+  const c=$('pw0').value,n=$('pw1').value,n2=$('pw2').value;pwOk=false;
+  if(!c||n.length<6){pwMsg=t('req');draw();return}
+  if(n!==n2){pwMsg=t('pwMismatch');draw();return}
+  try{
+    if(demo)await au.changePw(user.email,c,n);
+    else{await user.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(user.email,c));await user.updatePassword(n)}
+    pwOk=true;pwMsg=t('pwDone')}
+  catch(x){const k=(x&&x.code)||'';pwMsg=(k==='auth/wrong-password'||k==='auth/invalid-credential')?t('curPwBad'):authErr(x)}
+  draw()}
+function vPw(){return `<div class="card"><h3>🔑 ${t('chPw')}</h3>${I('pw0',t('curPw'),'','password')}${I('pw1',t('newPw'),'','password')}${I('pw2',t('newPw2'),'','password')}${pwMsg?`<p class="${pwOk?'ok':'err'}">${esc(pwMsg)}</p>`:''}<button class="btn" onclick="changePw()">${t('chPw')}</button></div>`}
+function vAuth(){const su=mode==='signup';
+  return `<div class="card"><h2>${t('tag')}</h2>${I('em',su?t('email'):t('emailOrName'),lastEm)}${I('pw',t('pass'),'','password')}${su?'':I('sc',t('bizCode'),ls('mp_sid')||'')}${E()}
+  <button class="btn" onclick="doAuth()">${su?t('signup'):t('login')}</button>${su?'':`<p style="text-align:center;margin:10px 0 0"><a href="#" style="color:#2f6fd6" onclick="forgotPw();return false">${t('forgot')}</a></p>`}
+  <button class="btn g" onclick="mode='${su?'login':'signup'}';say('');draw()">${su?t('haveAcc'):t('noAcc')}</button></div>`}
+function vNew(){return `<div class="card"><h2>${t('newbiz')}</h2>${I('bz',t('bname'),'')}${E()}<button class="btn" onclick="mkBiz()">${t('create')}</button></div>`}
+
+let discV='',discT='amt',taxOn=true;
+function cartItems(){return Object.keys(cart).map(id=>{const p=prods.find(x=>x.id===id);return p?{id,name:p.name,price:p.price,qty:cart[id]}:null}).filter(Boolean)}
+function calcT(items,o){
+  o=o||{discT,discV,taxOn};const sub=items.reduce((a,i)=>a+i.price*i.qty,0),sh=shop||{};
+  const v=Math.max(0,parseFloat(o.discV)||0),disc=+(o.discT==='pct'?sub*Math.min(v,100)/100:Math.min(v,sub)).toFixed(2);
+  const taxR=o.taxR!=null?o.taxR:(o.taxOn?(+sh.taxRate||0):0),tax=+((sub-disc)*taxR/100).toFixed(2);
+  return{sub,disc,discT:o.discT,discV:v,taxR,tax,taxName:sh.taxName||'',total:+(sub-disc+tax).toFixed(2)}}
+function totHtml(items){
+  const c=calcT(items),r=(a,b)=>`<div class="row" style="border:0;padding:3px 0"><span>${a}</span><span>${b}</span></div>`;
+  return `${c.disc>0||c.tax>0?r(t('subT'),money(c.sub)):''}${c.disc>0?r(t('disc')+(c.discT==='pct'?' ('+c.discV+'%)':''),'− '+money(c.disc)):''}${c.tax>0?r(esc(c.taxName||t('tax'))+' ('+c.taxR+'%)','+ '+money(c.tax)):''}<p class="tot" style="margin-top:4px">${t('total')}: ${money(c.total)}</p>`}
+function discIn(){const a=$('dv'),b=$('dtp'),c=$('txon');if(a)discV=a.value;if(b)discT=b.value;if(c)taxOn=c.checked;const e=$('tt');if(e)e.innerHTML=totHtml(cartItems());const g=$('chg');if(g)g.innerHTML=chgHtml()}
+const rcAmounts=s=>{const d=+s.disc||0,x=+s.tax||0;return(d||x)?`<div class="l"><span>${t('subT')}</span><span>${money(s.sub!=null?s.sub:s.total)}</span></div>${d?`<div class="l"><span>${t('disc')}${s.discT==='pct'?' ('+s.discV+'%)':''}</span><span>− ${money(d)}</span></div>`:''}${x?`<div class="l"><span>${esc(s.taxName||t('tax'))} (${s.taxR}%)</span><span>+ ${money(x)}</span></div>`:''}`:''};
+let recv='';
+function chgHtml(){
+  const tot=calcT(cartItems()).total,r=parseFloat(recv);if(recv===''||isNaN(r))return'';
+  return r>=tot-0.005?`<p class="tot ok" style="margin:4px 0">${t('change')}: ${money(r-tot)}</p>`:`<p class="tot low" style="margin:4px 0">${t('short')}: ${money(tot-r)}</p>`}
+function rvIn(){const a=$('rv');if(a)recv=a.value;const e=$('chg');if(e)e.innerHTML=chgHtml()}
+function rvSet(v){recv=String(v===0?calcT(cartItems()).total:v);const a=$('rv');if(a)a.value=recv;const e=$('chg');if(e)e.innerHTML=chgHtml()}
+const rcRecv=s=>s.recv!=null?`<div class="l"><span>${t('recv')}</span><span>${money(s.recv)}</span></div><div class="l"><b>${t('change')}</b><b>${money(s.change||0)}</b></div>`:'';
+function vVant(){
+  const ids=Object.keys(cart),tot=ids.reduce((a,id)=>{const p=prods.find(x=>x.id===id);return a+(p?p.price*cart[id]:0)},0);
+  const list=prods.filter(p=>!q||p.name.toLowerCase().includes(q.toLowerCase()));
+  return `<div class="card"><input id="sq" placeholder="${t('search')}" value="${esc(q)}" oninput="q=this.value;drawGrid()"></div>
+  <div class="grid" id="gr">${gridHtml(list)}</div>
+  <div class="card" style="margin-top:12px"><h3>${t('cartT')}</h3>${ids.length?ids.map(id=>{const p=prods.find(x=>x.id===id);return p?`<div class="row"><span>${esc(p.name)}<br><span class="mut">${money(p.price)}</span></span>
+   <span class="q"><button onclick="chg('${id}',-1)">−</button><b>${cart[id]}</b><button onclick="chg('${id}',1)">+</button></span><b>${money(p.price*cart[id])}</b></div>`:''}).join(''):`<p class="mut">${t('empty')}</p>`}
+  <div class="row" style="border:0;gap:8px;flex-wrap:nowrap;align-items:flex-end"><div style="flex:1"><label for="dv">${t('disc')}</label><input id="dv" type="number" min="0" inputmode="decimal" value="${esc(discV)}" oninput="discIn()"></div><div style="width:92px"><select id="dtp" onchange="discIn()"><option value="amt" ${discT==='amt'?'selected':''}>${(shop&&shop.cur)||'HTG'}</option><option value="pct" ${discT==='pct'?'selected':''}>%</option></select></div></div>
+  ${(+(shop||{}).taxRate||0)>0?`<label style="display:flex;gap:8px;align-items:center"><input id="txon" type="checkbox" style="width:auto" ${taxOn?'checked':''} onchange="discIn()"> ${esc((shop||{}).taxName||t('tax'))} (${(shop||{}).taxRate}%)</label>`:''}
+  <div id="tt">${totHtml(cartItems())}</div>
+  ${pay==='cash'?`<label for="rv">${t('recv')}</label><input id="rv" type="number" min="0" inputmode="decimal" value="${esc(recv)}" oninput="rvIn()">
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0"><button class="btn g sm" onclick="rvSet(0)">${t('exact')}</button>${[100,250,500,1000].map(v=>`<button class="btn g sm" onclick="rvSet(${v})">${v}</button>`).join('')}</div><div id="chg">${chgHtml()}</div>`:''}
+  <label>${t('pay')}</label><select onchange="pay=this.value;keep();draw()"><option value="cash" ${pay==='cash'?'selected':''}>${t('cash')}</option><option ${pay==='MonCash'?'selected':''} value="MonCash">MonCash</option><option ${pay==='Natcash'?'selected':''} value="Natcash">Natcash</option><option value="card" ${pay==='card'?'selected':''}>Kat / Carte</option></select>
+  ${I('cl',t('client'),client)}${E()}<button class="btn" onclick="sell()" ${ids.length?'':'disabled style="opacity:.5"'}>${t('sell')}</button></div>`}
+function gridHtml(list){return list.length?list.map(p=>`<button class="pt ${p.qty<=0?'z':''}" onclick="add('${p.id}')"><b>${esc(p.name)}</b><i>${money(p.price)}</i><small class="${p.qty<=low()?'low':''}">${t('stock')}: ${p.qty}</small></button>`).join(''):`<p class="mut">${t('none')}</p>`}
+function drawGrid(){$('gr').innerHTML=gridHtml(prods.filter(p=>!q||p.name.toLowerCase().includes(q.toLowerCase())))}
+function add(id){const p=prods.find(x=>x.id===id);if(!p)return;if((cart[id]||0)+1>p.qty){say(t('noStock')+' '+p.name,1);draw();return}say('');cart[id]=(cart[id]||0)+1;keep();draw()}
+function chg(id,d){const p=prods.find(x=>x.id===id);cart[id]=(cart[id]||0)+d;if(cart[id]<=0)delete cart[id];else if(p&&cart[id]>p.qty){cart[id]=p.qty;say(t('noStock')+' '+p.name,1)}keep();draw()}
+function keep(){const c=$('cl');if(c)client=c.value}
+
+function sell(){
+  keep();const ids=Object.keys(cart);if(!ids.length)return;
+  const items=ids.map(id=>{const p=prods.find(x=>x.id===id);return p?{id,name:p.name,price:p.price,qty:cart[id]}:null}).filter(Boolean);
+  for(const i of items){const p=prods.find(x=>x.id===i.id);if(i.qty>p.qty){say(t('noStock')+' '+p.name,1);draw();return}}
+  const c=calcT(items);
+  if(!isOwner()&&c.disc>0){const mx=(shop&&shop.discMax!=null&&shop.discMax!=='')?+shop.discMax:20,pc=c.sub?c.disc/c.sub*100:0;if(pc>mx+0.001){say(t('discMaxMsg')+' '+mx+'%',1);draw();return}}
+  const total=c.total,no=Date.now().toString(36).toUpperCase().slice(-7),rv=(pay==='cash'&&recv!==''&&!isNaN(parseFloat(recv)))?parseFloat(recv):null;
+  if(rv!==null&&rv<total-0.005){say(t('short')+': '+money(total-rv),1);draw();return}
+  const s={no,items,sub:c.sub,disc:c.disc,discT:c.discT,discV:c.discV,taxR:c.taxR,tax:c.tax,taxName:c.taxName,total,...(rv!==null?{recv:rv,change:+(rv-total).toFixed(2)}:{}),pay,client:client.trim(),seller:user.uid,sname:mem.name||user.email,t:Date.now()};
+  const b=db.batch();b.set(sc('sales').doc(no),s);items.forEach(i=>b.update(sc('products').doc(i.id),{qty:fv.increment(-i.qty)}));
+  b.commit().catch(e=>{say(t('err')+e.message,1);draw()});
+  cart={};client='';discV='';discT='amt';taxOn=true;recv='';say('');draw();showRc(s);if(prn.auto)printRc()}
+
+function showRc(s){
+  $('rc').innerHTML=`<div class="p"><div class="c">${shop&&shop.logo?`<img src="${esc(shop.logo)}" alt="" style="max-height:${Math.round(60*(shop.logoSize||100)/100)}px;max-width:100%"><br>`:''}<span style="${nameCss(shop)}">${esc(shop?shop.name:'')}</span>${shop&&shop.addr?'<br>'+esc(shop.addr):''}${shop&&shop.phone?'<br>Tel: '+esc(shop.phone):''}${shop&&shop.wa&&shop.wa!==shop.phone?'<br>WhatsApp: '+esc(shop.wa):''}${shop&&shop.tid?'<br>NIF: '+esc(shop.tid):''}<br>${t('hi')} #${s.no}<br>${dt(s.t)}${s.sname?`<br>${t('seller')}: <b>${esc(s.sname)}</b>`:''}</div><hr>
+  ${s.items.map(i=>`<div class="l"><span>${i.qty} × ${esc(i.name)}</span><span>${money(i.price*i.qty)}</span></div>`).join('')}<hr>
+  ${rcAmounts(s)}<div class="l"><b>${t('total')}</b><b>${money(s.total)}</b></div>${rcRecv(s)}<div class="l"><span>${t('pay')}</span><span>${s.pay==='cash'?t('cash'):esc(s.pay)}</span></div>${s.client?`<div>${esc(s.client)}</div>`:''}<hr><div class="c">${esc((shop&&shop.foot)||t('thx'))}</div>
+  <div class="no"><button class="btn" onclick="printRc()">${t('print')}</button>${canEdit(s)?`<button class="btn s" onclick="rcEdit()">${t('edit')}</button><button class="btn d" onclick="rcDel()">${t('cancelRc')}</button>`:''}<button class="btn s" onclick="shareRc('${s.no}')">${t('share')}</button><button class="btn" style="background:#6b46c1" onclick="dlRc()">⬇️ ${t('dl')}</button><button class="btn g" onclick="$('rc').style.display='none'">${t('close')}</button>${navigator.bluetooth?`<a href="#" style="grid-column:1/-1;text-align:center;color:#2f6fd6;font-size:.9rem;padding:6px" onclick="pickPrn().then(o=>{if(o)alert(t('prnOk'))});return false">🖨️ ${t('prnPick')}</a>`:''}</div></div>`;
+  window._rc=s;$('rc').style.display='flex'}
+const saleRow=(s,who)=>`<div class="row"><span onclick="openRc('${s.no}')" style="cursor:pointer">#${s.no} <span class="mut">${dt(s.t)}${who?' · '+esc(s.sname):''}${s.edited?' ✎':''}</span></span><span><b>${money(s.total)}</b> ${canEdit(s)?`<button class="btn s sm" onclick="openRc('${s.no}',1)">${t('edit')}</button> <button class="btn d sm" onclick="cancelRc('${s.no}')">${t('cancelRc')}</button>`:''}</span></div>`;
+function openRc(no,e){const s=sales.find(x=>x.no===no);if(!s)return;showRc(s);if(e)rcEdit()}
+function cancelRc(no){const s=sales.find(x=>x.no===no);if(!s)return;window._rc=s;rcDel()}
+const canEdit=s=>!!(mem&&user&&(isOwner()||s.seller===user.uid));
+const logSale=(b,type,s,after)=>b.set(sc('logs').doc(Date.now().toString(36)+Math.random().toString(36).slice(2,5)),{type,no:s.no,before:s.total,after,by:user.uid,bn:mem.name||user.email,t:Date.now()});
+function rcEdit(){
+  const s=window._rc;
+  $('rc').innerHTML=`<div class="p"><b>${t('edit')} #${s.no}</b>${s.items.map((i,k)=>`<div class="row"><span>${esc(i.name)}<br><span class="mut">${money(i.price)}</span></span><input id="rq${k}" type="number" min="0" value="${i.qty}" style="width:80px"></div>`).join('')}
+  <label>${t('pay')}</label><select id="rpay">${[['cash',t('cash')],['MonCash','MonCash'],['Natcash','Natcash'],['card','Kat / Carte']].map(x=>`<option value="${x[0]}" ${s.pay===x[0]?'selected':''}>${x[1]}</option>`).join('')}</select>${I('rcl',t('client'),s.client||'')}<p class="err" id="rerr"></p>
+  <button class="btn" onclick="rcSave()">${t('save')}</button><button class="btn g" onclick="showRc(window._rc)">${t('cancel')}</button></div>`}
+function rcSave(){
+  const s=window._rc,items=s.items.map((i,k)=>({...i,qty:Math.max(0,parseInt($('rq'+k).value)||0)})),kept=items.filter(i=>i.qty>0),bad=m=>{$('rerr').textContent=m};
+  if(!kept.length)return bad(t('badQty'));
+  for(let k=0;k<items.length;k++){const p=prods.find(x=>x.id===items[k].id),d=items[k].qty-s.items[k].qty;if(p&&d>p.qty)return bad(t('noStock')+' '+p.name)}
+  const c=calcT(kept,{discT:s.discT||'amt',discV:s.discV||0,taxR:+s.taxR||0}),total=c.total,ns={...s,items:kept,sub:c.sub,disc:c.disc,tax:c.tax,total,pay:$('rpay').value,client:$('rcl').value.trim(),edited:Date.now()},b=db.batch();if(ns.recv!=null){if(ns.recv>=total-0.005)ns.change=+(ns.recv-total).toFixed(2);else{ns.recv=null;ns.change=null}}
+  b.set(sc('sales').doc(s.no),ns);
+  items.forEach((i,k)=>{const d=s.items[k].qty-i.qty;if(d&&prods.find(x=>x.id===i.id))b.update(sc('products').doc(i.id),{qty:fv.increment(d)})});
+  logSale(b,'edit',s,total);b.commit().catch(e=>{say(t('err')+e.message,1);draw()});showRc(ns)}
+function rcDel(){
+  if(!confirm(t('sureDel')))return;const s=window._rc,b=db.batch();
+  b.delete(sc('sales').doc(s.no));s.items.forEach(i=>{if(prods.find(x=>x.id===i.id))b.update(sc('products').doc(i.id),{qty:fv.increment(i.qty)})});
+  logSale(b,'delete',s,0);b.commit().catch(e=>{say(t('err')+e.message,1);draw()});$('rc').style.display='none'}
+async function rcBlob(s){
+  const W=576,P=28,SC=2,sh=shop||{},F='system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+  const logo=sh.logo?await new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=sh.logo}):null;
+  const m=document.createElement('canvas').getContext('2d'),fnt=(px,b,o)=>(o&&o.i?'italic ':'')+(b?'bold ':'')+px+'px '+((o&&o.fam)||F);
+  const wrap=(txt,px,b,maxW,o)=>{m.font=fnt(px,b,o);const out=[];let line='';for(const w of String(txt).split(' ')){const t2=line?line+' '+w:w;if(m.measureText(t2).width<=maxW){line=t2;continue}if(line)out.push(line);line=w;while(m.measureText(line).width>maxW){let k=line.length-1;while(k>1&&m.measureText(line.slice(0,k)).width>maxW)k--;out.push(line.slice(0,k));line=line.slice(k)}}out.push(line);return out};
+  const R=[],cen=(txt,px,b,o)=>{if(txt)wrap(txt,px,b,W-2*P,o).forEach(l=>R.push({k:'c',t:l,px,b,o}))},hr=()=>R.push({k:'hr'}),sp=h=>R.push({k:'sp',h});
+  if(logo){const hh=Math.min(120,70*(sh.logoSize||100)/100),ww=Math.min(W-2*P,Math.round(logo.width*hh/logo.height));R.push({k:'img',w:ww,h:Math.round(logo.height*ww/logo.width)})}
+  cen(sh.name||'',Math.round(30*(+sh.nameSize||100)/100),sh.nameBold===false?0:1,{i:!!sh.nameItalic,fam:FAM[sh.nameFont]});cen(sh.addr,19);if(sh.phone)cen('Tel: '+sh.phone,19);if(sh.wa&&sh.wa!==sh.phone)cen('WhatsApp: '+sh.wa,19);if(sh.tid)cen('NIF: '+sh.tid,19);
+  sp(8);cen(t('hi')+' #'+s.no,24,1);cen(dt(s.t),19);if(s.sname)cen(t('seller')+': '+s.sname,19);hr();
+  s.items.forEach(i=>{const r=money(i.price*i.qty);m.font=fnt(21);const rw=m.measureText(r).width;wrap(i.qty+' × '+i.name,21,0,W-2*P-rw-14).forEach((l,k)=>R.push({k:'lr',l,r:k?'':r,px:21}))});
+  hr();if((+s.disc||0)||(+s.tax||0)){R.push({k:'lr',l:t('subT'),r:money(s.sub!=null?s.sub:s.total),px:21});if(+s.disc)R.push({k:'lr',l:t('disc')+(s.discT==='pct'?' ('+s.discV+'%)':''),r:'− '+money(s.disc),px:21});if(+s.tax)R.push({k:'lr',l:(s.taxName||t('tax'))+' ('+s.taxR+'%)',r:'+ '+money(s.tax),px:21})}R.push({k:'lr',l:t('total'),r:money(s.total),px:28,b:1});if(s.recv!=null){R.push({k:'lr',l:t('recv'),r:money(s.recv),px:21});R.push({k:'lr',l:t('change'),r:money(s.change||0),px:24,b:1})}R.push({k:'lr',l:t('pay'),r:s.pay==='cash'?t('cash'):s.pay,px:21});
+  if(s.client)cen(s.client,21);hr();cen(sh.foot||t('thx'),21);sp(10);
+  const hOf=r=>r.k==='img'?r.h+12:r.k==='hr'?16:r.k==='sp'?r.h:Math.round(r.px*1.5);
+  const H=P*2+R.reduce((a,r)=>a+hOf(r),0),c=document.createElement('canvas');c.width=W*SC;c.height=H*SC;
+  const x=c.getContext('2d');x.scale(SC,SC);x.fillStyle='#fff';x.fillRect(0,0,W,H);x.fillStyle='#000';x.strokeStyle='#000';x.textBaseline='top';
+  let y=P;
+  for(const r of R){
+    if(r.k==='img')x.drawImage(logo,(W-r.w)/2,y,r.w,r.h);
+    else if(r.k==='hr'){x.setLineDash([7,5]);x.lineWidth=1.5;x.beginPath();x.moveTo(P,y+8);x.lineTo(W-P,y+8);x.stroke()}
+    else if(r.k==='c'){x.font=fnt(r.px,r.b,r.o);x.textAlign='center';x.fillText(r.t,W/2,y)}
+    else if(r.k==='lr'){x.font=fnt(r.px,r.b);x.textAlign='left';x.fillText(r.l,P,y);x.textAlign='right';x.fillText(r.r,W-P,y)}
+    y+=hOf(r)}
+  return new Promise(res=>c.toBlob(res,'image/png'))}
+async function dlRc(){
+  const s=window._rc;if(!s)return;
+  try{const blob=await rcBlob(s),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='resi-'+s.no+'.png';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
+  catch(e){alert(t('err')+(e.message||e))}}
+async function shareRc(){
+  const s=window._rc;if(!s)return;
+  try{
+    const blob=await rcBlob(s),file=new File([blob],'resi-'+s.no+'.png',{type:'image/png'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:(shop?shop.name:'')+' — '+t('hi')+' #'+s.no});return}
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=file.name;document.body.appendChild(a);a.click();a.remove();
+    alert(t('imgSaved'));const u='https://wa.me/',w=window.open(u,'_blank');if(!w)location.href=u
+  }catch(e){if(e&&e.name==='AbortError')return;alert(t('err')+(e.message||e))}}
+
+function vLand(){return `<div class="card" style="background:#14305c;color:#fff;text-align:center"><h2>${t('land1')}</h2><p style="opacity:.9">${t('land2')}</p></div>
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-bottom:12px">${[1,2,3].map(i=>`<div class="card" style="margin:0"><b>${t('lf'+i+'t')}</b><p class="mut" style="margin-top:4px">${t('lf'+i+'d')}</p></div>`).join('')}</div>`}
+function vMine(){
+  const d0=new Date().setHours(0,0,0,0),S=sales.filter(s=>s.t>=d0&&(isOwner()||s.seller===user.uid));
+  return `<div class="kp"><div><b>${S.length}</b>${t('sales')}</div><div><b>${money(S.reduce((a,s)=>a+s.total,0))}</b>${t('rev')}</div></div>
+  <div class="card"><h3>${t('today')}</h3><p class="mut" style="margin-bottom:6px">${t('hintRc')}</p>${S.map(s=>`${saleRow(s,isOwner())}`).join('')||`<p class="mut">${t('none')}</p>`}</div>`}
+
+/* ---------- imprimante ---------- */
+let prn=Object.assign({mode:'sys',width:58,auto:false,name:'',btId:'',usbVid:0,usbPid:0},(()=>{try{return JSON.parse(localStorage.getItem('mp_prn')||'{}')}catch(e){return{}}})());
+let pdev=null,pchar=null,pusb=null,pout=0;
+const savePrn=()=>{try{localStorage.setItem('mp_prn',JSON.stringify(prn))}catch(e){}};
+if(!prn.v){prn.v=2;if(prn.mode==='sys'&&!prn.btId&&typeof navigator!=='undefined'&&navigator.bluetooth)prn.mode='bt';savePrn()}
+const BT_SV=[0x18f0,0xff00,0xffe0,0xfee7,'e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455'];
+async function connBT(d){pdev=d;
+  if(!d._mp){d._mp=1;d.addEventListener('gattserverdisconnected',()=>{pchar=null;setTimeout(()=>{if(prn.mode==='bt'&&pdev===d)connBT(d).catch(()=>{}).then(()=>draw())},2000)})}
+  const sv=await d.gatt.connect(),ss=await sv.getPrimaryServices();pchar=null;
+  for(const s of ss){for(const c of await s.getCharacteristics()){if(c.properties.write||c.properties.writeWithoutResponse){pchar=c;break}}if(pchar)break}
+  if(!pchar)throw new Error(t('prnNoChar'))}
+async function connUSB(d){await d.open();if(!d.configuration)await d.selectConfiguration(1);
+  for(const c of d.configuration.interfaces)for(const a of c.alternates){const ep=a.endpoints.find(e=>e.direction==='out'&&e.type==='bulk');if(ep){await d.claimInterface(c.interfaceNumber);pusb=d;pout=ep.endpointNumber;return}}
+  throw new Error(t('prnNoChar'))}
+async function addPrinter(){
+  const m=$('pmode').value;prn.mode=m;prn.width=+$('pw').value;prn.auto=$('pauto').checked;logoKey='';
+  try{
+    if(m==='bt'){if(!navigator.bluetooth)throw new Error(t('prnNo'));const d=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:BT_SV});await connBT(d);prn.name=d.name||'Bluetooth';prn.btId=d.id}
+    else if(m==='usb'){if(!navigator.usb)throw new Error(t('prnNo'));const d=await navigator.usb.requestDevice({filters:[]});await connUSB(d);prn.name=d.productName||'USB';prn.usbVid=d.vendorId;prn.usbPid=d.productId}
+    else if(m==='rawbt')prn.name='RawBT';
+    else prn.name='';
+    savePrn();prepLogo();say(t('prnOk'))}catch(e){say(t('err')+(e.message||e),1)}
+  draw()}
+function rmPrinter(){try{pdev&&pdev.gatt&&pdev.gatt.disconnect()}catch(e){}prn={v:2,mode:(navigator.bluetooth?'bt':'sys'),width:58,auto:false,name:'',btId:'',usbVid:0,usbPid:0};pdev=pchar=pusb=null;savePrn();say('');draw()}
+async function findBT(){try{if(prn.btId&&navigator.bluetooth&&navigator.bluetooth.getDevices){const ds=await navigator.bluetooth.getDevices();return ds.find(x=>x.id===prn.btId)||null}}catch(e){}return null}
+async function autoPrn(){try{
+  if(prn.mode==='bt'){const d=await findBT();if(d)await connBT(d)}
+  else if(prn.mode==='usb'&&navigator.usb&&navigator.usb.getDevices){const ds=await navigator.usb.getDevices(),d=ds.find(x=>x.vendorId===prn.usbVid&&x.productId===prn.usbPid);if(d)await connUSB(d)}
+  }catch(e){}draw()}
+function rawbt(u){let b='';for(let i=0;i<u.length;i+=8192)b+=String.fromCharCode.apply(null,u.subarray(i,i+8192));location.href='intent:base64,'+btoa(b)+'#Intent;scheme=rawbt;launchFlags=0x10000000;package=ru.a402d.rawbtprinter;end;'}
+async function sendRaw(u){
+  if(prn.mode==='rawbt'){rawbt(u);return}
+  if(prn.mode==='bt'){if(!pdev)pdev=await findBT();if(!pdev)throw new Error(t('prnRe'));if(!pchar||!pdev.gatt.connected)await connBT(pdev);
+    for(let i=0;i<u.length;i+=100){const c=u.slice(i,i+100);pchar.properties.writeWithoutResponse?await pchar.writeValueWithoutResponse(c):await pchar.writeValue(c);await new Promise(r=>setTimeout(r,12))}}
+  else if(prn.mode==='usb'){if(!pusb)await autoPrn();if(!pusb)throw new Error(t('prnRe'));await pusb.transferOut(pout,u)}}
+let logoBits=null,logoKey='',logoSzDraft;
+function prepLogo(){
+  const sh=shop||{};if(!sh.logo){logoBits=null;logoKey='';return Promise.resolve()}
+  const maxW=prn.width===80?576:384,k=sh.logo.length+'|'+(sh.logoSize||100)+'|'+maxW;if(k===logoKey)return Promise.resolve();
+  return new Promise(res=>{const im=new Image();im.onload=()=>{try{
+    let w=Math.round(maxW*Math.min(200,sh.logoSize||100)/200/8)*8;w=Math.max(48,Math.min(maxW,w));
+    const h=Math.max(8,Math.round(im.height*w/im.width)),c=document.createElement('canvas');c.width=w;c.height=h;
+    const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,h);x.drawImage(im,0,0,w,h);
+    const d=x.getImageData(0,0,w,h).data,bw=w/8,out=new Uint8Array(bw*h);
+    for(let y=0;y<h;y++)for(let b=0;b<bw;b++){let v=0;for(let i=0;i<8;i++){const p=(y*w+b*8+i)*4;if(0.3*d[p]+0.59*d[p+1]+0.11*d[p+2]<150)v|=0x80>>i}out[y*bw+b]=v}
+    logoBits={bw,h,out};logoKey=k}catch(e){logoBits=null}res()};im.onerror=()=>{logoBits=null;res()};im.src=sh.logo})}
+function escpos(s){
+  const w=prn.width===80?48:32,enc=x=>String(x==null?'':x).replace(/[\u202f\u00a0]/g,' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\x20-\x7e]/g,'?');
+  const line=(l,r)=>{l=enc(l);r=enc(r);const sp=w-l.length-r.length;return sp>0?l+' '.repeat(sp)+r:l.slice(0,Math.max(1,w-r.length-1))+' '+r};
+  const B=[0x1b,0x40],txt=x=>{for(const c of enc(x))B.push(c.charCodeAt(0));B.push(10)},al=n=>B.push(0x1b,0x61,n),bd=n=>B.push(0x1b,0x45,n),sh=shop||{};
+  al(1);if(logoBits&&prn.mode!=='sys'){B.push(0x1d,0x76,0x30,0,logoBits.bw&255,logoBits.bw>>8,logoBits.h&255,logoBits.h>>8);for(const v of logoBits.out)B.push(v);B.push(10)}escNameBytes(sh,w,enc).forEach(v=>B.push(v));if(sh.addr)txt(sh.addr);if(sh.phone)txt('Tel: '+sh.phone);if(sh.tid)txt('NIF: '+sh.tid);txt('#'+s.no+'  '+dt(s.t));if(s.sname)txt(t('seller')+': '+s.sname);al(0);txt('-'.repeat(w));
+  s.items.forEach(i=>txt(line(i.qty+' x '+i.name,money(i.price*i.qty))));txt('-'.repeat(w));if((+s.disc||0)||(+s.tax||0)){txt(line(t('subT'),money(s.sub!=null?s.sub:s.total)));if(+s.disc)txt(line(t('disc')+(s.discT==='pct'?' ('+s.discV+'%)':''),'- '+money(s.disc)));if(+s.tax)txt(line((s.taxName||t('tax'))+' ('+s.taxR+'%)','+ '+money(s.tax)))}bd(1);txt(line('TOTAL',money(s.total)));bd(0);if(s.recv!=null){txt(line(t('recv'),money(s.recv)));bd(1);txt(line(t('change'),money(s.change||0)));bd(0)}txt(line(t('pay'),s.pay==='cash'?t('cash'):s.pay));
+  if(s.client)txt(s.client);al(1);txt(sh.foot||t('thx'));B.push(10,10,10,0x1d,0x56,0x00);return new Uint8Array(B)}
+async function pickPrn(){
+  if(!navigator.bluetooth){alert(t('prnNo'));return false}
+  try{const d=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:BT_SV});await connBT(d);prn.mode='bt';prn.name=d.name||'Bluetooth';prn.btId=d.id;savePrn();logoKey='';draw();return true}
+  catch(e){if(e&&(e.name==='NotFoundError'||e.name==='AbortError'))return false;throw e}}
+async function printRc(){
+  const s=window._rc;if(!s)return;if(prn.mode==='sys'){window.print();return}
+  try{
+    if(prn.mode==='bt'){
+      if(!pdev)pdev=await findBT();
+      if(pdev&&!(pdev.gatt.connected&&pchar)){try{await Promise.race([connBT(pdev),new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),3000))])}catch(e){pdev=null;pchar=null}}
+      if(!pdev||!pchar){if(!await pickPrn())return}
+    }
+    await prepLogo();await sendRaw(escpos(s))
+  }catch(e){alert(t('err')+(e.message||e)+'\n'+t('prnRe'))}}
+function testPrn(){const s={no:'TEST',t:Date.now(),items:[{name:'Test',price:1,qty:1}],total:1,pay:'cash',seller:user?user.uid:''};window._rc=s;if(prn.mode==='sys'){showRc(s);setTimeout(()=>window.print(),300)}else printRc()}
+function vPrn(){
+  const ok=prn.mode==='sys'||prn.mode==='rawbt'||(prn.mode==='bt'&&pdev&&pdev.gatt&&pdev.gatt.connected)||(prn.mode==='usb'&&pusb);
+  const op=(v,l)=>`<option value="${v}" ${prn.mode===v?'selected':''}>${l}</option>`;
+  return `<div class="card"><h3>🖨️ ${t('prn')}</h3><p class="mut">${t('prnStatus')}: <b class="${ok?'ok':'low'}">${prn.name?esc(prn.name)+' · ':''}${prn.mode==='sys'?t('prnSys'):prn.mode==='rawbt'?t('prnRawOk'):ok?t('prnConn'):t('prnDisc')}</b></p>
+  <label for="pmode">${t('prnType')}</label><select id="pmode" onchange="prn.mode=this.value;prn.width=+$('pw').value;prn.auto=$('pauto').checked;savePrn();draw()">${op('sys',t('prnSys'))}${op('rawbt',t('prnRawName'))}${op('bt','Bluetooth BLE (ESC/POS)')}${op('usb','USB (ESC/POS)')}</select>
+  <label for="pw">${t('prnWidth')}</label><select id="pw"><option value="58" ${prn.width!==80?'selected':''}>58 mm</option><option value="80" ${prn.width===80?'selected':''}>80 mm</option></select>
+  <label style="display:flex;gap:8px;align-items:center"><input id="pauto" type="checkbox" style="width:auto" ${prn.auto?'checked':''}> ${t('prnAuto')}</label>${E()}
+  <button class="btn" onclick="addPrinter()">➕ ${t('prnAdd')}</button><button class="btn s" onclick="testPrn()">${t('prnTest')}</button><button class="btn d" onclick="rmPrinter()">${t('prnRm')}</button>
+  ${prn.mode==='rawbt'?`<div class="box" style="margin-top:10px">${t('prnRaw')}</div>`:''}${prn.mode==='bt'?`<p class="mut" style="margin-top:8px">${t('prnNoShow')}</p>`:''}<p class="mut" style="margin-top:8px">${t('prnNote')}</p></div>`}
+
+/* ---------- reçus ---------- */
+const rFrom=()=>rper==='all'?0:rper==='today'?new Date().setHours(0,0,0,0):Date.now()-(+rper)*864e5;
+const logsCard=()=>(isOwner()&&lg.length?`<div class="card"><h3>${t('logs')}</h3>${lg.map(l=>`<div class="row"><span>${l.type==='edit'?t('lEdit'):t('lDel')} #${esc(l.no)} <span class="mut">${esc(l.bn||'')} · ${dt(l.t)}</span></span><span>${money(l.before)} → <b>${money(l.after)}</b></span></div>`).join('')}</div>`:'');
+function resiList(){const q2=(rq||'').toLowerCase().replace('#',''),f=rFrom(),L=sales.filter(x=>x.t>=f&&(!q2||(x.no+' '+(x.client||'')+' '+(x.sname||'')).toLowerCase().includes(q2))).slice(0,100);return L.length?L.map(x=>saleRow(x,true)).join(''):`<p class="mut">${t('noRc')}</p>`}
+function drawResi(){$('rl').innerHTML=resiList()}
+function vResi(){return `<div class="card"><input id="rqs" placeholder="${t('searchRc')}" value="${esc(rq)}" oninput="rq=this.value;drawResi()">
+  <div class="tabs" style="position:static;margin-top:8px;border-radius:8px;border:1px solid #dbe2ec">${[['all','all'],['today','today'],['7','d7'],['30','d30']].map(x=>`<button class="${rper===x[0]?'on':''}" onclick="rper='${x[0]}';draw()">${t(x[1])}</button>`).join('')}</div>
+  <p class="mut" style="margin-top:6px">${t('hintRc')}</p>${E()}</div>
+  <div class="card"><h3>${t('rcT')}</h3><div id="rl">${resiList()}</div></div>${logsCard()}`}
+
+/* ---------- abonnement ---------- */
+function bill(){const s=shop||{},now=Date.now(),te=s.trialEnd!=null?s.trialEnd:((s.t||now)+BILLING.trialDays*DAY),pe=s.paidUntil||0;
+  if(pe>now)return{st:'paid',end:pe,days:Math.ceil((pe-now)/DAY)};
+  if(te>now)return{st:'trial',end:te,days:Math.ceil((te-now)/DAY)};
+  return{st:'expired',end:Math.max(te,pe),days:0}}
+function billBar(b){
+  const go=isOwner()?`<button class="btn sm" style="margin-left:8px" onclick="tab='sub';draw()">${t('sub')}</button>`:'';
+  if(b.st==='trial')return `<div class="card" style="background:#eef7ff;padding:10px">${t('trialBar')}<b>${b.days}</b>${t('leftBar')}${go}</div>`;
+  if(b.st==='paid'&&b.days<=7)return `<div class="card" style="background:#fff8e1;padding:10px">${t('renewBar')}<b>${b.days}</b> ${t('days')}${go}</div>`;
+  return ''}
+function vSub(){
+  const b=bill(),st=b.st==='paid'?`${t('subPaid')} ${new Date(b.end).toLocaleDateString(lang==='fr'?'fr-FR':'fr-HT')} (${b.days} ${t('days')})`:b.st==='trial'?`${t('subTrial')}: ${b.days} ${t('days')}`:t('expired');
+  return `<div class="card"><h3>${t('sub')}</h3><p><b class="${b.st==='expired'?'low':'ok'}">${st}</b></p></div>
+  <div class="card"><h3>${t('plans')}</h3>${BILLING.plans.map(p=>`<div class="row"><span><b>${esc(p.name)}</b><br><span class="mut">${p.days} ${t('days')}</span></span><span><b>${p.price.toLocaleString('fr-FR')} HTG</b> <button class="btn sm" onclick="payPlan('${p.id}')">${t('subPay')}</button></span></div>`).join('')}
+  <p class="mut" style="margin-top:8px">${t('subHow')}</p><div class="box">${BILLING.moncash?'MonCash: '+esc(BILLING.moncash)+'\n':''}Natcash: ${esc(BILLING.natcash)}\n${t('subCode')}: ${esc(sid)}</div></div>`}
+function payPlan(id){
+  const p=BILLING.plans.find(x=>x.id===id),n=String(BILLING.wa||'').replace(/\D/g,'');if(!n){alert(t('noWa'));return}
+  const m=t('msgPay')+'\n'+(shop?shop.name:'')+'\n'+t('subCode')+': '+sid+'\nPlan: '+p.name+' ('+p.price+' HTG)\n'+(user?user.email:'');
+  if(db&&sid&&isOwner())db.doc('shops/'+sid).update({payReq:{id:p.id,name:p.name,days:p.days,price:p.price,t:Date.now()}}).catch(()=>{});
+  const u='https://wa.me/'+n+'?text='+encodeURIComponent(m),w=window.open(u,'_blank');if(!w)location.href=u}
+
+/* ---------- tableau de bord ---------- */
+function vDash(){
+  const d0=new Date().setHours(0,0,0,0),sum=a=>a.reduce((x,s)=>x+s.total,0),
+   td=sales.filter(s=>s.t>=d0),wk=sales.filter(s=>s.t>=d0-6*864e5),mo=sales.filter(s=>s.t>=d0-29*864e5);
+  const days=[...Array(7)].map((_,i)=>{const a=d0-(6-i)*864e5,b=a+864e5;return{l:new Date(a).toLocaleDateString(lang==='fr'?'fr-FR':'fr-HT',{weekday:'short'}),v:sum(sales.filter(s=>s.t>=a&&s.t<b))}});
+  const mx=Math.max(1,...days.map(x=>x.v)),lows=prods.filter(p=>p.qty<=low()).sort((a,b)=>a.qty-b.qty),sv=prods.reduce((a,p)=>a+p.price*Math.max(0,p.qty),0);
+  return `<div class="kp"><div><b>${money(sum(td))}</b>${t('today')} · ${td.length} ${t('sales')}</div><div><b>${money(sum(wk))}</b>${t('week')}</div><div><b>${money(sum(mo)+archSum(d0-29*864e5).rev)}</b>${t('month')}</div>
+  <div><b>${td.length?money(sum(td)/td.length):'—'}</b>${t('avg')}</div></div>
+  <div class="card"><h3>${t('last7')}</h3><div style="display:flex;align-items:flex-end;gap:6px;height:130px">${days.map(x=>`<div style="flex:1;text-align:center;font-size:.7rem;color:#556"><div style="height:${Math.round(x.v/mx*90)}px;min-height:2px;background:#27ae60;border-radius:4px 4px 0 0"></div>${esc(x.l)}</div>`).join('')}</div></div>
+  <div class="card"><h3>${t('lowL')}</h3>${lows.length?lows.slice(0,8).map(p=>`<div class="row"><span>${esc(p.name)}</span><b class="low">${p.qty}</b></div>`).join(''):`<p class="ok">${t('okAll')}</p>`}
+  <p class="mut" style="margin-top:8px">${t('stockVal')}: <b>${money(sv)}</b> · ${prods.length} ${t('unit')}</p></div>
+  <div class="card"><h3>${t('recent')}</h3>${sales.slice(0,5).map(s=>`<div class="row"><span>#${s.no} <span class="mut">${dt(s.t)} · ${esc(s.sname)}</span></span><b>${money(s.total)}</b></div>`).join('')||`<p class="mut">${t('none')}</p>`}</div>`}
+
+/* ---------- paramètres ---------- */
+function lgSize(d){keepSet();const cur=logoSzDraft!==undefined?logoSzDraft:((shop&&shop.logoSize)||100);logoSzDraft=Math.max(40,Math.min(200,cur+d));draw()}
+const FAM={sans:"system-ui,-apple-system,'Segoe UI',Roboto,sans-serif",serif:"Georgia,'Times New Roman',serif",mono:"'Courier New',ui-monospace,monospace"};
+function nameCss(sh,base){sh=sh||{};const S=+sh.nameSize||100;return `font-size:${(S/100*(base||1)).toFixed(2)}${base?'rem':'em'};font-weight:${sh.nameBold===false?'normal':'bold'};font-style:${sh.nameItalic?'italic':'normal'}${FAM[sh.nameFont]?';font-family:'+FAM[sh.nameFont]:''}`}
+function escNameBytes(sh,w,enc){
+  const S=+sh.nameSize||100,m=S>=180?0x11:S>=130?0x01:0x00,per=(m&0x10)?Math.floor(w/2):w,B=[0x1b,0x45,sh.nameBold===false?0:1,0x1d,0x21,m];
+  const lines=[];let ln='';for(const x of enc(sh.name||'').split(' ')){if((ln+' '+x).trim().length>per&&ln){lines.push(ln);ln=x}else ln=(ln+' '+x).trim()}if(ln)lines.push(ln);
+  lines.forEach(l=>{for(const c of l)B.push(c.charCodeAt(0));B.push(10)});B.push(0x1d,0x21,0,0x1b,0x45,0);return B}
+let nmD={};
+const nmGet=(k,d)=>nmD[k]!==undefined?nmD[k]:((shop&&shop[k]!=null)?shop[k]:d);
+function nmSize(d){keepSet();nmD.nameSize=Math.max(60,Math.min(220,(+nmGet('nameSize',100)||100)+d));draw()}
+function nmTog(k){keepSet();nmD[k]=!nmGet(k,k==='nameBold');draw()}
+function nmFont(f){keepSet();nmD.nameFont=f;draw()}
+function keepSet(){const g=id=>$(id)?$(id).value:'';sdr={name:g('sb'),phone:g('sph'),wa:g('swa'),addr:g('sad'),tid:g('sti'),foot:g('sft'),low:g('slw'),cur:g('scu'),taxRate:g('stx'),taxName:g('stn'),discMax:g('sdm'),autoPurge:$('apg')?$('apg').checked:false,purgeDays:g('pgd')}}
+function shrinkImg(f,max){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>{const im=new Image();im.onload=()=>{const k=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext('2d').drawImage(im,0,0,c.width,c.height);res(c.toDataURL('image/png'))};im.onerror=rej;im.src=r.result};r.onerror=rej;r.readAsDataURL(f)})}
+async function pickLogo(i){const f=i.files[0];if(!f)return;keepSet();try{logoDraft=await shrinkImg(f,240);say('')}catch(e){say(t('err')+e.message,1)}draw()}
+function rmLogo(){keepSet();logoDraft='';say('');draw()}
+function vSet(){
+  const c=Object.assign({},shop||{},sdr||{}),lg=logoDraft!==undefined?logoDraft:(c.logo||''),lsz=logoSzDraft!==undefined?logoSzDraft:(c.logoSize||100);
+  return `<div class="card"><h3>${t('info')}</h3><label>${t('logo')}</label>
+  ${lg?`<img src="${esc(lg)}" alt="" style="height:${Math.round(60*lsz/100)}px;max-width:100%;display:block;margin-bottom:8px;border:1px solid #dbe2ec;border-radius:6px;padding:4px">
+  <div class="row" style="border:0"><span>${t('logoSize')}: <b>${lsz}%</b></span><span><button class="btn s sm" onclick="lgSize(-20)">−</button> <button class="btn s sm" onclick="lgSize(20)">＋</button></span></div>`:''}
+  <input type="file" accept="image/*" onchange="pickLogo(this)">${lg?`<button class="btn d sm" style="margin-top:8px" onclick="rmLogo()">${t('rmLogo')}</button>`:''}<p class="mut" style="margin-top:4px">${t('logoHint')}</p>
+  ${I('sb',t('bname'),c.name||'')}<label>${t('nameStyle')}</label><div class="card" style="background:#f7fafc;padding:10px;margin:0 0 6px">
+  <div style="text-align:center;margin-bottom:8px;overflow-wrap:anywhere;${nameCss({nameSize:nmGet('nameSize',100),nameBold:nmGet('nameBold',true),nameItalic:nmGet('nameItalic',false),nameFont:nmGet('nameFont','default')})}">${esc(c.name||'Ti Boutik')}</div>
+  <div class="row" style="border:0"><span>${t('nameSize')}: <b>${+nmGet('nameSize',100)}%</b></span><span><button class="btn s sm" onclick="nmSize(-10)">−</button> <button class="btn s sm" onclick="nmSize(10)">＋</button></span></div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm ${nmGet('nameBold',true)?'':'g'}" onclick="nmTog('nameBold')"><b>B</b></button><button class="btn sm ${nmGet('nameItalic',false)?'':'g'}" onclick="nmTog('nameItalic')"><i>I</i></button>
+  ${[['default','fDef'],['sans','fSans'],['serif','fSerif'],['mono','fMono']].map(x=>`<button class="btn sm ${nmGet('nameFont','default')===x[0]?'':'g'}" onclick="nmFont('${x[0]}')">${t(x[1])}</button>`).join('')}</div>
+  <p class="mut" style="margin-top:6px">${t('nameHintTh')}</p></div>${I('sph',t('phone'),c.phone||'','tel')}${I('swa',t('wa'),c.wa||'','tel')}${I('sad',t('addr'),c.addr||'')}${I('sti',t('tid'),c.tid||'')}${I('sft',t('foot'),c.foot||'')}
+  ${I('slw',t('lowTh'),c.low!=null&&c.low!==''?c.low:low(),'number')}${I('stx',t('taxRate'),c.taxRate!=null?c.taxRate:0,'number')}${I('stn',t('taxName'),c.taxName||'')}${I('sdm',t('discMax'),c.discMax!=null&&c.discMax!==''?c.discMax:20,'number')}<label style="display:flex;gap:8px;align-items:center;margin-top:14px"><input id="apg" type="checkbox" style="width:auto" ${c.autoPurge?'checked':''}> 🧹 ${t('purgeOn')}</label>${I('pgd',t('purgeDays'),c.purgeDays||15,'number')}<p class="mut" style="margin-top:4px">${t('purgeNote')}</p><button class="btn g" style="margin:6px 0 10px" onclick="purgeNow()">${t('purgeNow')}</button><label for="scu">${t('cur')}</label><select id="scu">${['HTG','USD','DOP','EUR'].map(x=>`<option ${(c.cur||'HTG')===x?'selected':''}>${x}</option>`).join('')}</select>${E()}
+  <button class="btn" onclick="saveSet()">${t('save')}</button></div>
+  <div class="card"><h3>${t('acct')}</h3><p class="mut">${esc(user.email||'')} · ${t('owner')}</p><button class="btn g" onclick="resetPw()">${t('reset')}</button></div>${vPw()}${vPrn()}`}
+function saveSet(){
+  const n=$('sb').value.trim();if(!n){say(t('req'),1);draw();return}
+  const d={name:n,phone:$('sph').value.trim(),wa:$('swa').value.trim(),addr:$('sad').value.trim(),tid:$('sti').value.trim(),foot:$('sft').value.trim(),low:Math.max(0,parseInt($('slw').value)||0),cur:$('scu').value,taxRate:Math.max(0,Math.min(100,parseFloat($('stx').value)||0)),taxName:$('stn').value.trim(),...nmD,discMax:Math.max(0,Math.min(100,parseFloat($('sdm').value)||0)),autoPurge:$('apg').checked,purgeDays:Math.max(7,Math.min(365,parseInt($('pgd').value)||15))};
+  if(logoDraft!==undefined)d.logo=logoDraft;if(logoSzDraft!==undefined)d.logoSize=logoSzDraft;
+  db.doc('shops/'+sid).update(d).then(()=>{logoDraft=undefined;logoSzDraft=undefined;nmD={};sdr=null;say(t('saved'));draw()}).catch(e=>{say(t('err')+e.message,1);draw()})}
+function resetPw(){au.sendPasswordResetEmail(user.email).then(()=>{say(t('sent'));draw()}).catch(e=>{say(t('err')+e.message,1);draw()})}
+
+/* ---------- produits / inventaire ---------- */
+function vInv(){
+  return `<div class="card"><h3>${ed&&ed.id?t('edit'):t('inv')}</h3>${I('pn',t('pname'),ed?ed.name:'')}${I('pp',t('pprice'),ed?ed.price:'','number')}${I('pq',t('pqty'),ed?ed.qty:'','number')}${E()}
+  <button class="btn" onclick="saveP()">${t('save')}</button>${ed?`<button class="btn g" onclick="ed=null;say('');draw()">${t('cancel')}</button>`:''}</div>
+  <div class="card">${prods.length?prods.map((p,i)=>`<div class="row"><span><b>${esc(p.name)}</b><br><span class="mut">${money(p.price)} · ${t('stock')}: <span class="${p.qty<=low()?'low':''}">${p.qty}</span></span></span>
+   <span><button class="btn s sm" onclick="editP(${i})">${t('edit')}</button> <button class="btn d sm" onclick="delP(${i})">${t('del')}</button></span></div>`).join(''):`<p class="mut">${t('none')}</p>`}</div>`}
+function editP(i){ed={...prods[i]};say('');draw();scrollTo(0,0)}
+function saveP(){
+  const n=$('pn').value.trim(),p=parseFloat($('pp').value),qn=parseInt($('pq').value);
+  if(!n||isNaN(p)||isNaN(qn)){say(t('req'),1);draw();return}
+  const d={name:n,price:p,qty:qn,t:Date.now()};
+  const pr=ed&&ed.id?sc('products').doc(ed.id).update({name:n,price:p,qty:qn}):sc('products').add(d);
+  pr.catch(e=>{say(t('err')+e.message,1);draw()});ed=null;say('');draw()}
+function delP(i){if(confirm(t('sure')))sc('products').doc(prods[i].id).delete().catch(e=>{say(t('err')+e.message,1);draw()})}
+
+/* ---------- inventaire ---------- */
+function vInvT(){
+  const tq=prods.reduce((a,p)=>a+Math.max(0,p.qty),0),sv=prods.reduce((a,p)=>a+p.price*Math.max(0,p.qty),0),lw=prods.filter(p=>p.qty>0&&p.qty<=low()).length,ou=prods.filter(p=>p.qty<=0).length;
+  const L=prods.filter(p=>(invF==='all'||(invF==='low'&&p.qty>0&&p.qty<=low())||(invF==='out'&&p.qty<=0))&&(!invQ||p.name.toLowerCase().includes(invQ.toLowerCase())));
+  const tn={in:t('tIn'),out:t('tOut'),adj:t('tAdj')};
+  return `<div class="kp"><div><b>${prods.length}</b>${t('inv')}</div><div><b>${tq}</b>${t('units')}</div><div><b>${money(sv)}</b>${t('stockVal')}</div><div><b class="low">${lw}</b>${t('lowF')}</div><div><b class="low">${ou}</b>${t('outN')}</div></div>
+  <div class="card"><input id="iq" placeholder="${t('search')}" value="${esc(invQ)}" oninput="invQ=this.value;drawInv()">
+   <div class="tabs" style="position:static;margin-top:8px;border-radius:8px;border:1px solid #dbe2ec">${[['all','all'],['low','lowF'],['out','outF']].map(x=>`<button class="${invF===x[0]?'on':''}" onclick="invF='${x[0]}';draw()">${t(x[1])}</button>`).join('')}</div>
+   <p class="mut" style="margin-top:8px">${t('invHelp')}</p>${E()}</div>
+  <div id="il">${invRows(L)}</div>
+  <div class="card"><h3>${t('hist')}</h3>${mv.length?mv.map(m=>`<div class="row"><span>${esc(m.name)} <span class="mut">${dt(m.t)}${m.note?' · '+esc(m.note):''}</span></span><span><b class="${m.type==='out'?'low':m.type==='in'?'ok':''}">${tn[m.type]||''} ${m.type==='adj'?'':(m.type==='in'?'+':'−')}${m.qty}</b> <span class="mut">(${m.before} → ${m.after})</span></span></div>`).join(''):`<p class="mut">${t('none')}</p>`}</div>`}
+function invRows(L){return L.length?L.map(p=>`<div class="card" style="padding:10px"><div class="row" style="border:0"><span><b>${esc(p.name)}</b><br><span class="mut">${money(p.price)}</span></span><b class="tot ${p.qty<=low()?'low':''}">${p.qty}</b></div>
+   <div class="row" style="border:0;flex-wrap:nowrap"><input id="mq_${p.id}" type="number" min="0" placeholder="${t('pqty')}" style="width:90px;flex:none">
+   <button class="btn sm" onclick="stk('${p.id}','in')">${t('invIn')}</button><button class="btn d sm" onclick="stk('${p.id}','out')">${t('invOut')}</button><button class="btn s sm" onclick="stk('${p.id}','adj')">${t('invAdj')}</button></div></div>`).join(''):`<p class="mut">${t('none')}</p>`}
+function drawInv(){const L=prods.filter(p=>(invF==='all'||(invF==='low'&&p.qty>0&&p.qty<=low())||(invF==='out'&&p.qty<=0))&&(!invQ||p.name.toLowerCase().includes(invQ.toLowerCase())));$('il').innerHTML=invRows(L)}
+function stk(id,type){
+  const p=prods.find(x=>x.id===id),n=parseInt($('mq_'+id).value);
+  if(!p||isNaN(n)||n<0||(type!=='adj'&&n===0)){say(t('badQty'),1);draw();return}
+  if(type==='out'&&n>p.qty){say(t('noGo')+' ('+p.name+')',1);draw();return}
+  const after=type==='in'?p.qty+n:type==='out'?p.qty-n:n,b=db.batch();
+  b.update(sc('products').doc(id),{qty:type==='adj'?n:fv.increment(type==='in'?n:-n)});
+  b.set(sc('moves').doc(Date.now().toString(36)+Math.random().toString(36).slice(2,5)),{pid:id,name:p.name,type,qty:type==='adj'?Math.abs(after-p.qty):n,before:p.qty,after,by:user.uid,t:Date.now()});
+  b.commit().catch(e=>{say(t('err')+e.message,1);draw()});say('✔');draw()}
+
+/* ---------- rapports ---------- */
+/* ---------- suppression automatique des anciens reçus ---------- */
+let dailies=[],purging=false,purged=false;
+function archSum(from){return dailies.filter(d=>d.t>=from).reduce((a,d)=>({n:a.n+(+d.n||0),rev:a.rev+(+d.rev||0),tx:a.tx+(+d.tax||0),dc:a.dc+(+d.disc||0)}),{n:0,rev:0,tx:0,dc:0})}
+async function runPurge(manual){
+  if(purging||!isOwner()||!shop)return 0;if(!manual&&!shop.autoPurge)return 0;
+  const days=Math.max(7,parseInt(shop.purgeDays)||15),cut=new Date().setHours(0,0,0,0)-days*864e5;let total=0;purging=true;
+  try{
+    for(let r=0;r<12;r++){
+      const q=await sc('sales').where('t','<',cut).limit(240).get();if(!q.docs.length)break;
+      const agg={},b=db.batch();
+      q.docs.forEach(d=>{const s=d.data(),dk=new Date(s.t).setHours(0,0,0,0),a=agg[dk]||(agg[dk]={n:0,rev:0,tax:0,disc:0,pm:{}}),k=String(s.pay||'cash').replace(/[^A-Za-z0-9]/g,'');
+        a.n++;a.rev+=+s.total||0;a.tax+=+s.tax||0;a.disc+=+s.disc||0;a.pm[k]=(a.pm[k]||0)+(+s.total||0);b.delete(sc('sales').doc(d.id))});
+      Object.keys(agg).forEach(dk=>{const a=agg[dk],dd=new Date(+dk),o={t:+dk,n:fv.increment(a.n),rev:fv.increment(a.rev),tax:fv.increment(a.tax),disc:fv.increment(a.disc)};
+        Object.keys(a.pm).forEach(k=>o['pm_'+k]=fv.increment(a.pm[k]));
+        b.set(sc('daily').doc(dd.getFullYear()+'-'+String(dd.getMonth()+1).padStart(2,'0')+'-'+String(dd.getDate()).padStart(2,'0')),o,{merge:true})});
+      await b.commit();total+=q.docs.length}
+  }catch(e){if(manual)say(fsErr(e),1)}
+  purging=false;if(manual){if(!err)say(t('purgedN').replace('{n}',total));draw()}return total}
+function purgeNow(){if(confirm(t('purgeSure')))runPurge(true)}
+/* ---------- impression du rapport ---------- */
+function rapData(){
+  const from=per===1?new Date().setHours(0,0,0,0):Date.now()-per*864e5,S=sales.filter(s=>s.t>=from),bs={},cs={},tp={},pm={};
+  S.forEach(s=>{bs[s.sname]=(bs[s.sname]||0)+s.total;cs[s.sname]=(cs[s.sname]||0)+1;const k=s.pay==='cash'?t('cash'):s.pay;pm[k]=(pm[k]||0)+s.total;s.items.forEach(i=>tp[i.name]=(tp[i.name]||0)+i.qty)});
+  const ar=isOwner()?archSum(from):{n:0,rev:0,tx:0,dc:0};return{S,cnt:S.length+ar.n,rev:S.reduce((a,s)=>a+s.total,0)+ar.rev,tx:S.reduce((a,s)=>a+(+s.tax||0),0)+ar.tx,dc:S.reduce((a,s)=>a+(+s.disc||0),0)+ar.dc,bs,cs,pm,top:Object.entries(tp).sort((a,b)=>b[1]-a[1]).slice(0,5),label:({1:t('today'),7:t('d7'),30:t('d30')})[per]||''}}
+function escRap(d){
+  const w=prn.width===80?48:32,enc=x=>String(x==null?'':x).replace(/[\u202f\u00a0]/g,' ').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^\x20-\x7e]/g,'?');
+  const line=(l,r)=>{l=enc(l);r=enc(r);const sp=w-l.length-r.length;return sp>0?l+' '.repeat(sp)+r:l.slice(0,Math.max(1,w-r.length-1))+' '+r};
+  const B=[0x1b,0x40],txt=x=>{for(const c of enc(x))B.push(c.charCodeAt(0));B.push(10)},al=n=>B.push(0x1b,0x61,n),bd=n=>B.push(0x1b,0x45,n),sh=shop||{},hr=()=>txt('-'.repeat(w));
+  al(1);escNameBytes(sh,w,enc).forEach(v=>B.push(v));txt(t('rapT')+' - '+d.label);txt(dt(Date.now()));al(0);hr();
+  txt(line(t('sales'),String(d.cnt)));bd(1);txt(line(t('rev'),money(d.rev)));bd(0);if(d.tx>0)txt(line(t('tax'),money(d.tx)));if(d.dc>0)txt(line(t('disc'),'- '+money(d.dc)));
+  hr();bd(1);txt(t('bySeller'));bd(0);Object.keys(d.bs).forEach(k=>txt(line(k+' ('+d.cs[k]+')',money(d.bs[k]))));
+  hr();bd(1);txt(t('byPay'));bd(0);Object.keys(d.pm).forEach(k=>txt(line(k,money(d.pm[k]))));
+  if(d.top.length){hr();bd(1);txt(t('top'));bd(0);d.top.forEach(x=>txt(line(x[0],String(x[1]))))}
+  hr();B.push(10,10,10,0x1d,0x56,0x00);return new Uint8Array(B)}
+async function ensurePrn(){
+  if(prn.mode==='bt'){
+    if(!pdev)pdev=await findBT();
+    if(pdev&&!(pdev.gatt.connected&&pchar)){try{await Promise.race([connBT(pdev),new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),3000))])}catch(e){pdev=null;pchar=null}}
+    if(!pdev||!pchar){if(!await pickPrn())return false}}
+  return true}
+function rapModal(d){
+  const row=(l,r)=>`<div class="l"><span>${esc(l)}</span><span>${esc(r)}</span></div>`,sh=shop||{};
+  $('rc').innerHTML=`<div class="p"><div class="c">${sh.logo?`<img src="${esc(sh.logo)}" alt="" style="max-height:${Math.round(60*(sh.logoSize||100)/100)}px;max-width:100%"><br>`:''}<span style="${nameCss(sh)}">${esc(sh.name||'')}</span><br><b>${t('rapT')}</b> — ${esc(d.label)}<br>${dt(Date.now())}</div><hr>
+  ${row(t('sales'),String(d.cnt))}<div class="l"><b>${t('rev')}</b><b>${esc(money(d.rev))}</b></div>${d.tx>0?row(t('tax'),money(d.tx)):''}${d.dc>0?row(t('disc'),'- '+money(d.dc)):''}<hr>
+  <b>${t('bySeller')}</b>${Object.keys(d.bs).map(k=>row(k+' ('+d.cs[k]+')',money(d.bs[k]))).join('')}<hr>
+  <b>${t('byPay')}</b>${Object.keys(d.pm).map(k=>row(k,money(d.pm[k]))).join('')}
+  ${d.top.length?`<hr><b>${t('top')}</b>${d.top.map(x=>row(x[0],String(x[1]))).join('')}`:''}<hr>
+  <div class="no"><button class="btn" onclick="window.print()">${t('print')}</button><button class="btn g" onclick="$('rc').style.display='none'">${t('close')}</button></div></div>`;
+  $('rc').style.display='flex'}
+async function printRap(){
+  const d=rapData();
+  if(prn.mode==='sys'){rapModal(d);return}
+  try{if(!await ensurePrn())return;await sendRaw(escRap(d))}catch(e){alert(t('err')+(e.message||e)+'\n'+t('prnRe'))}}
+
+function vRap(){
+  const from=per===1?new Date().setHours(0,0,0,0):Date.now()-per*864e5,S=sales.filter(s=>s.t>=from);
+  const rev=S.reduce((a,s)=>a+s.total,0),bs={},cs={},tp={};
+  S.forEach(s=>{bs[s.sname]=(bs[s.sname]||0)+s.total;cs[s.sname]=(cs[s.sname]||0)+1;s.items.forEach(i=>tp[i.name]=(tp[i.name]||0)+i.qty)});
+  const top=Object.entries(tp).sort((a,b)=>b[1]-a[1]).slice(0,5),tx=S.reduce((a,s)=>a+(+s.tax||0),0),dc=S.reduce((a,s)=>a+(+s.disc||0),0),ar=isOwner()?archSum(from):{n:0,rev:0,tx:0,dc:0};
+  return `<div class="tabs" style="position:static;margin-bottom:12px;border-radius:10px">${[[1,'today'],[7,'d7'],[30,'d30']].map(x=>`<button class="${per===x[0]?'on':''}" onclick="per=${x[0]};draw()">${t(x[1])}</button>`).join('')}</div>
+  <button class="btn s" style="margin:0 0 12px" onclick="printRap()">🖨️ ${t('printRap')}</button><div class="kp"><div><b>${S.length+ar.n}</b>${t('sales')}</div><div><b>${money(rev+ar.rev)}</b>${t('rev')}</div>${(tx+ar.tx)>0?`<div><b>${money(tx+ar.tx)}</b>${t('tax')}</div>`:''}${(dc+ar.dc)>0?`<div><b>${money(dc+ar.dc)}</b>${t('disc')}</div>`:''}</div>${ar.n?`<p class="mut" style="margin:-6px 0 10px">${t('archNote')}</p>`:''}
+  <div class="card"><h3>${t('bySeller')}</h3>${Object.keys(bs).length?Object.entries(bs).map(x=>`<div class="row"><span>${esc(x[0])} <span class="mut">(${cs[x[0]]} ${t('sales')})</span></span><b>${money(x[1])}</b></div>`).join(''):`<p class="mut">${t('none')}</p>`}</div>
+  <div class="card"><h3>${t('top')}</h3>${top.length?top.map(x=>`<div class="row"><span>${esc(x[0])}</span><b>${x[1]}</b></div>`).join(''):`<p class="mut">${t('none')}</p>`}</div>
+  
+  <div class="card"><h3>${t('recent')}</h3>${S.slice(0,25).map(s=>`${saleRow(s,true)}`).join('')||`<p class="mut">${t('none')}</p>`}</div>`}
+
+/* ---------- employés ---------- */
+function vStaff(){
+  return `<div class="card"><h3>${t('addStaff')}</h3>${I('sn',t('sname'),'')}${I('sp',t('pass'),'','password')}<div class="box">${t('subCode')}: ${esc(sid)}</div><p class="mut" style="margin-top:6px">${t('staffInfo')}</p>${E()}<button class="btn" onclick="addStaff()">${t('create')}</button></div>
+  <div class="card">${team.map(m=>`<div class="row"><span><b>${esc(m.name||m.email)}</b><br><span class="mut">${m.email&&!/@staff\.minipos\.app$/.test(m.email)?esc(m.email)+' · ':''}${m.role==='owner'?t('owner'):t('staff')}</span></span>${m.role==='owner'?'':`<span><button class="btn s sm" onclick="rsId='${m.id}';say('');draw()">🔑 ${t('rsPw')}</button> <button class="btn d sm" onclick="rmStaff('${m.id}')">${t('rmS')}</button></span>`}${rsId===m.id?`<div style="width:100%">${I('rsp',t('newPw'),'','password')}<button class="btn sm" style="margin-top:6px" onclick="resetStaff('${m.id}')">${t('save')}</button> <button class="btn g sm" onclick="rsId='';draw()">${t('cancel')}</button></div>`:''}</div>`).join('')}</div>`}
+async function newAuthUser(e,p){if(demo)return au.createOnly(e,p);const sec=firebase.apps.find(a=>a.name==='sec')||firebase.initializeApp(FB,'sec');const c=await sec.auth().createUserWithEmailAndPassword(e,p);const uid=c.user.uid;await sec.auth().signOut();return uid}
+async function mkStaffAcct(n,p){
+  const k=sid+'_'+slug(n),ix=await db.doc('staffIdx/'+k).get();let v=ix.exists?(ix.data().v||0)+1:0,uid=null;
+  for(let i=0;i<4&&uid===null;i++){try{uid=await newAuthUser(staffMail(n,sid,v),p)}catch(x){if(x&&x.code==='auth/email-already-in-use'&&i<3){v++;continue}throw x}}
+  return{uid,v,e:staffMail(n,sid,v),k}}
+async function addStaff(){
+  const n=$('sn').value.trim(),p=$('sp').value;
+  if(!n||!slug(n)||p.length<6){say(t('req'),1);draw();return}
+  if(team.some(m=>slug(m.name||'')===slug(n))){say(t('dupStaff'),1);draw();return}
+  try{const a=await mkStaffAcct(n,p),b=db.batch();
+    b.set(sc('members').doc(a.uid),{role:'staff',name:n,email:a.e});b.set(db.doc('users/'+a.uid),{sid});b.set(db.doc('staffIdx/'+a.k),{sid,v:a.v});await b.commit();say('✔')}
+  catch(x){say(x.code==='auth/email-already-in-use'?t('dupStaff'):authErr(x),1)}draw()}
+async function resetStaff(uid){
+  const m=team.find(x=>x.id===uid),np=($('rsp')||{}).value||'';
+  if(!m||np.length<6){say(t('req'),1);draw();return}
+  try{
+    const a=await mkStaffAcct(m.name,np),b=db.batch();
+    b.set(sc('members').doc(a.uid),{role:'staff',name:m.name,email:a.e});b.set(db.doc('users/'+a.uid),{sid});b.set(db.doc('staffIdx/'+a.k),{sid,v:a.v});
+    b.delete(sc('members').doc(uid));b.delete(db.doc('users/'+uid));await b.commit();
+    let lost=false;try{const q=await sc('sales').where('seller','==',uid).get();for(let i=0;i<q.docs.length;i+=400){const bb=db.batch();q.docs.slice(i,i+400).forEach(d=>bb.update(sc('sales').doc(d.id),{seller:a.uid}));await bb.commit()}}catch(e){lost=true}
+    rsId='';say(t('rsOk')+(lost?' '+t('rsSales'):''))}
+  catch(x){say(authErr(x),1)}draw()}
+function rmStaff(uid){if(!confirm(t('sure')))return;const b=db.batch();b.delete(sc('members').doc(uid));b.delete(db.doc('users/'+uid));b.commit().catch(e=>{say(t('err')+e.message,1);draw()})}
+
+/* ---------- mode démo : mini base locale (même API que Firebase) ---------- */
+function localBackend(){
+  let S={},L=[],cb=null,cur=null;
+  try{S=JSON.parse(localStorage.getItem('mp_demo')||'{}');cur=JSON.parse(localStorage.getItem('mp_demo_cur')||'null')}catch(e){}
+  addEventListener('storage',e=>{if(e.key==='mp_demo'){try{S=JSON.parse(e.newValue||'{}')}catch(_){S={}}L.slice().forEach(f=>f())}});
+  const save=()=>{try{localStorage.setItem('mp_demo',JSON.stringify(S))}catch(e){}},fire=()=>{save();setTimeout(()=>L.slice().forEach(f=>f()),0)};
+  const put=(p,d,keep)=>{const o=keep?(S[p]||{}):{};for(const k in d){const v=d[k];o[k]=(v&&v.__inc!==undefined)?(o[k]||0)+v.__inc:v}S[p]=o};
+  const cp=o=>JSON.parse(JSON.stringify(o)),snap=p=>({exists:!!S[p],data:()=>S[p]?cp(S[p]):undefined});
+  const sub=(f,get)=>{const r=()=>f(get());L.push(r);r();return()=>{L=L.filter(x=>x!==r)}};
+  const dref=p=>({path:p,get:async()=>snap(p),set:async d=>{put(p,d);fire()},update:async d=>{if(!S[p])throw new Error('Not found');put(p,d,1);fire()},delete:async()=>{delete S[p];fire()},onSnapshot:f=>sub(f,()=>snap(p))});
+  const cref=(path,fl)=>{const rows=()=>{const re=new RegExp('^'+path+'/[^/]+$');return Object.keys(S).filter(k=>re.test(k)&&(!fl||(fl[2]==='<'?S[k][fl[0]]<fl[1]:fl[2]==='<='?S[k][fl[0]]<=fl[1]:fl[2]==='>'?S[k][fl[0]]>fl[1]:fl[2]==='>='?S[k][fl[0]]>=fl[1]:S[k][fl[0]]===fl[1]))).map(k=>({id:k.split('/').pop(),data:()=>cp(S[k])}))};
+    return{doc:id=>dref(path+'/'+id),add:async d=>{const id='p'+Math.random().toString(36).slice(2,9);put(path+'/'+id,d);fire();return{id}},where:(f,o,v)=>cref(path,[f,v,o]),orderBy:()=>cref(path,fl),limit:()=>cref(path,fl),get:async()=>({docs:rows()}),onSnapshot:(a,b)=>sub(b||a,()=>({docs:rows()}))}};
+  const setCur=u=>{cur=u;try{localStorage.setItem('mp_demo_cur',JSON.stringify(u))}catch(e){}if(cb)cb(u)};
+  const mk=(e,p)=>{e=String(e).toLowerCase().trim();if(!/\S+@\S+\.\S+/.test(e))throw{code:'auth/invalid-email'};if(String(p).length<6)throw{code:'auth/weak-password'};if(S['_auth/'+e])throw{code:'auth/email-already-in-use'};
+    const u={uid:'u'+Math.random().toString(36).slice(2,11),email:e};S['_auth/'+e]={uid:u.uid,pw:p};save();return u};
+  const auth={onAuthStateChanged:f=>{cb=f;setTimeout(()=>f(cur),0)},
+    createUserWithEmailAndPassword:async(e,p)=>{const u=mk(e,p);setCur(u);return{user:u}},createOnly:async(e,p)=>mk(e,p).uid,
+    signInWithEmailAndPassword:async(e,p)=>{e=String(e).toLowerCase().trim();const a=S['_auth/'+e];if(!a||a.pw!==p)throw{code:'auth/invalid-credential'};const u={uid:a.uid,email:e};setCur(u);return{user:u}},
+    signOut:async()=>setCur(null),sendPasswordResetEmail:async()=>{},changePw:async(em,cu,nw)=>{const a=S['_auth/'+em];if(!a||a.pw!==cu)throw{code:'auth/wrong-password'};if(String(nw).length<6)throw{code:'auth/weak-password'};a.pw=nw;save()}};
+  const db={doc:dref,collection:p=>cref(p),batch:()=>{const ops=[],b={set:(r,d,m)=>(ops.push(()=>put(r.path,d,m&&m.merge)),b),update:(r,d)=>(ops.push(()=>put(r.path,d,1)),b),delete:r=>(ops.push(()=>{delete S[r.path]}),b),commit:async()=>{ops.forEach(f=>f());fire()}};return b}};
+  return{db,auth,fv:{increment:n=>({__inc:n})}}}
+function demoReset(){if(!confirm(t('sure')))return;try{localStorage.removeItem('mp_demo');localStorage.removeItem('mp_demo_cur')}catch(e){}location.reload()}
+
+/* ---------- diagnostic des erreurs Firebase ---------- */
+function authErr(x){
+  const c=(x&&x.code)||'',m={
+   'auth/operation-not-allowed':['Email/Password pa aktive nan Firebase (Authentication › Sign-in method).','Email/Password n’est pas activé dans Firebase (Authentication › Sign-in method).'],
+   'auth/unauthorized-domain':['Domèn sa a pa nan Authorized domains (Authentication › Settings).','Ce domaine n’est pas dans Authorized domains (Authentication › Settings).'],
+   'auth/invalid-api-key':['Kle API Firebase la pa bon. Verifye konfigirasyon an.','Clé API Firebase invalide. Vérifiez la configuration.'],
+   'auth/api-key-not-valid':['Kle API Firebase la pa bon. Verifye konfigirasyon an.','Clé API Firebase invalide. Vérifiez la configuration.'],
+   'auth/network-request-failed':['Pa gen koneksyon entènèt, oswa Firebase bloke.','Pas de connexion internet, ou Firebase est bloqué.'],
+   'auth/email-already-in-use':['Imèl sa a gen yon kont deja. Konekte.','Cet e-mail a déjà un compte. Connectez-vous.'],
+   'auth/weak-password':['Modpas la dwe gen omwen 6 karaktè.','Le mot de passe doit avoir au moins 6 caractères.'],
+   'auth/invalid-email':['Imèl la pa valid.','E-mail invalide.'],
+   'auth/too-many-requests':['Twòp esè. Tann yon ti moman epi eseye ankò.','Trop de tentatives. Patientez puis réessayez.']}[c];
+  return (m?m[lang==='fr'?1:0]:t('bad'))+(c?' ('+c+')':'')}
+function fsErr(e){
+  const c=(e&&e.code)||'',m=String((e&&e.message)||'');
+  if(c==='permission-denied')return t('rulesMsg')+' ('+c+')';
+  if(c==='not-found'||/does not exist|NOT_FOUND/i.test(m))return t('noDb')+' ('+(c||'not-found')+')';
+  if(c==='unavailable')return t('fsDown')+' ('+c+')';
+  return t('err')+m}
+
+/* ---------- auth / démarrage ---------- */
+async function doAuth(){
+  let e=$('em').value.trim();const p=$('pw').value;say('');
+  if(mode!=='signup'&&e&&e.indexOf('@')<0){const code=(($('sc')||{}).value||'').trim().toLowerCase();if(!code){say(t('needCode'),1);draw();return}let v=0;try{const d=await db.doc('staffIdx/'+code+'_'+slug(e)).get();if(d.exists)v=d.data().v||0}catch(x){}e=staffMail(e,code,v)}
+  try{mode==='signup'?await au.createUserWithEmailAndPassword(e,p):await au.signInWithEmailAndPassword(e,p)}catch(x){say(authErr(x),1);draw()}}
+async function mkBiz(){
+  const name=$('bz').value.trim();if(!name){say(t('req'),1);draw();return}
+  const id='s'+Date.now().toString(36)+user.uid.slice(0,4).toLowerCase(),b=db.batch(),em=(user.email||'').toLowerCase();
+  b.set(db.doc('shops/'+id),{owner:user.uid,name,t:Date.now(),trialEnd:Date.now()+BILLING.trialDays*DAY,ownerEmail:(user.email||'').toLowerCase()});
+  b.set(db.doc('shops/'+id+'/members/'+user.uid),{role:'owner',name:em.split('@')[0],email:em});
+  b.set(db.doc('users/'+user.uid),{sid:id});
+  try{await b.commit();say('');await loadShop()}catch(x){say(fsErr(x),1);draw()}}
+function stop(){un.forEach(f=>f());un=[];lg=[];mv=[];dailies=[];purged=false;prods=[];sales=[];team=[];shop=null;mem=null;sid=null;cart={}}
+async function loadShop(){
+  stop();
+  try{
+    const u=await db.doc('users/'+user.uid).get();
+    if(!u.exists){stage='new';draw();return}
+    sid=u.data().sid;ls('mp_sid',sid);const m=await db.doc('shops/'+sid+'/members/'+user.uid).get();
+    if(!m.exists){stage='none';draw();return}
+    mem=m.data();stage='ok';tab=APP==='site'?'dash':'vant';
+    un.push(db.doc('shops/'+sid).onSnapshot(d=>{shop=d.data();prepLogo();draw();if(!purged&&isOwner()&&shop&&shop.autoPurge){purged=true;setTimeout(()=>runPurge(false),4000)}}));
+    un.push(sc('products').onSnapshot(s=>{prods=s.docs.map(d=>({...d.data(),id:d.id})).sort((a,b)=>a.name.localeCompare(b.name));if(tab==='vant'&&document.activeElement.id!=='sq')draw();else if(tab==='vant')drawGrid();else if(!document.activeElement.matches('input,select'))draw()}));
+    const sq=isOwner()?sc('sales').orderBy('t','desc').limit(1000):sc('sales').where('seller','==',user.uid).limit(500);
+    un.push(sq.onSnapshot({includeMetadataChanges:true},s=>{const op=pend;pend=s.docs.filter(d=>d.metadata&&d.metadata.hasPendingWrites).length;sales=s.docs.map(d=>d.data()).sort((a,b)=>b.t-a.t);if(op!==pend&&!document.activeElement.matches('input,select')){draw();return}if(tab==='resi'){if($('rl'))drawResi()}else if(tab==='rap'||tab==='dash'||tab==='mine')draw()}));
+    if(isOwner())un.push(sc('daily').onSnapshot(s=>{dailies=s.docs.map(d=>d.data());if((tab==='rap'||tab==='dash')&&!document.activeElement.matches('input'))draw()}));
+    if(isOwner())un.push(sc('logs').onSnapshot(s=>{lg=s.docs.map(d=>d.data()).sort((a,b)=>b.t-a.t).slice(0,30);if((tab==='rap'||tab==='resi')&&!document.activeElement.matches('input'))draw()}));
+    if(isOwner())un.push(sc('moves').onSnapshot(s=>{mv=s.docs.map(d=>d.data()).sort((a,b)=>b.t-a.t).slice(0,40);if(tab==='invT'&&!document.activeElement.matches('input'))draw()}));
+    if(isOwner())un.push(sc('members').onSnapshot(s=>{team=s.docs.map(d=>({...d.data(),id:d.id}));if(tab==='staff'&&!document.activeElement.matches('input'))draw()}));
+    draw()
+  }catch(e){stage='fail';say(fsErr(e),1);draw()}}
+
+if(demo){const B=localBackend();db=B.db;au=B.auth;fv=B.fv}
+else if(typeof firebase==='undefined'){window.NOFB=true;draw()}
+else{firebase.initializeApp(FB);db=firebase.firestore();au=firebase.auth();fv=firebase.firestore.FieldValue;db.enablePersistence({synchronizeTabs:true}).catch(()=>{})}
+if(au)au.onAuthStateChanged(u=>{user=u;if(u){stage='boot';draw();loadShop()}else{stop();stage='out';draw()}});
+addEventListener('online',()=>draw());addEventListener('offline',()=>draw());
+if('serviceWorker' in navigator&&/^https?:/.test(location.protocol))addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+autoPrn();
+</script>
+</body>
+</html>
